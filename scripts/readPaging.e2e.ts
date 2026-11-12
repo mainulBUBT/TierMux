@@ -73,6 +73,18 @@ async function main() {
   ok('later pages do not repeat it', !page2.includes('<outline'));
   ok('a file that fits one page gets none', !(await read({ path: 'small.php' })).includes('<outline'));
 
+  // "Did you mean" (OpenCode read.ts parity): a wrong extension, case or folder names what exists.
+  fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'src', 'userService.ts'), 'export const x = 1;\n');
+  const ext = await read({ path: 'src/userService.js' });
+  ok('wrong extension suggests the real file', ext.includes('Did you mean: src/userService.ts'), ext);
+  const dir = await read({ path: 'lib/nothing/here.ts' });
+  ok('a missing folder names the nearest existing one, relative', /nearest existing folder is `\.`/.test(dir) && dir.includes('src/') && !dir.includes(root), dir);
+  const deep = await read({ path: 'src/models/user.ts' });
+  ok('a missing subfolder points at its existing parent', /nearest existing folder is `src`/.test(deep), deep);
+  const none = await read({ path: 'src/zzzzzz.go' });
+  ok('an unrelated name gets the plain message', /File not found: src\/zzzzzz\.go$/.test(none.trim()), none);
+
   fs.rmSync(root, { recursive: true, force: true });
   console.log(bad === 0 ? '\nRead paging holds.' : `\n${bad} FAILED`);
   process.exit(bad === 0 ? 0 : 1);

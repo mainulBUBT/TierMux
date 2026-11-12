@@ -75,6 +75,8 @@ async function main(): Promise<void> {
       // localhost cross-origin is still localhost — allow it (a dev server on https).
       return subresourceAllowed('https://localhost:8443/bundle.js', top);
     })());
+    check('public top page cannot reach localhost (SSRF)', !subresourceAllowed('http://127.0.0.1:8080/api', 'https://evil.example.com'));
+    check('public top page cannot reach [::1] (SSRF)', !subresourceAllowed('http://[::1]:5432/', 'https://evil.example.com'));
     check('data: allowed', subresourceAllowed('data:image/png;base64,xxx', top));
     check('blob: allowed', subresourceAllowed('blob:http://localhost:3000/uuid', top));
     check('file: blocked', !subresourceAllowed('file:///etc/passwd', top));
@@ -94,6 +96,17 @@ async function main(): Promise<void> {
     const r = await t.execute({ url: 'http://localhost:3000' });
     check('disable message names the fix', isErr(r) && /install|TIERMUX_CHROME_PATH|chromePath/i.test(r.error), String(r));
     check('explicit-but-missing override does not fall back to a real Chrome', isErr(r));
+  }
+
+  console.log('\n— Top-level SSRF: private/metadata addresses refused, loopback still allowed —');
+  {
+    const t = makeTool({ chromePath: '/nonexistent/tm-test-chrome' });
+    for (const u of ['http://192.168.1.1/', 'http://169.254.169.254/latest/meta-data', 'http://10.0.0.5:8080/']) {
+      const r = await t.execute({ url: u });
+      check(`refused ${u}`, isErr(r) && /private or internal/.test(r.error), String(isErr(r) ? r.error : r));
+    }
+    const ok = await t.execute({ url: 'http://127.0.0.1:3000' });
+    check('loopback passes the SSRF gate (fails later on the missing browser)', isErr(ok) && /Chrome/.test(ok.error), String(isErr(ok) ? ok.error : ok));
   }
 
   if (!chrome) {

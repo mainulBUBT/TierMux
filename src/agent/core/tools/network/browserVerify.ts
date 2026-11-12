@@ -19,6 +19,7 @@ import { capToolOutput } from '../capOutput';
 import { effectiveRootUri } from '../workspaceRoot';
 import { taskRegistryFor } from '../taskRegistry';
 import { CdpPipeClient, findChromePath } from './cdp';
+import { isHostResolvingToPrivate } from './tiermuxWeb/fetcher/safe-fetch';
 
 const HARD_DEADLINE_MS = 60_000;
 const NAV_TIMEOUT_MS = 15_000;
@@ -52,8 +53,11 @@ export function subresourceAllowed(url: string, topOrigin: string): boolean {
   const origin = u.origin;
   if (origin === topOrigin) return true;
   // Any localhost port/scheme is allowed — the dev stack's API/backend (and an mkcert https
-  // frontend) lives next to the dev server.
-  return (u.protocol === 'http:' || u.protocol === 'https:') && LOCAL_HOSTS.has(u.hostname);
+  // frontend) lives next to the dev server. Only for a LOCAL top page: a public page must not
+  // reach the user's local services through this browser.
+  let topHost = '';
+  try { topHost = new URL(topOrigin).hostname; } catch { /* unparsable top → no local reach */ }
+  return LOCAL_HOSTS.has(u.hostname) && LOCAL_HOSTS.has(topHost);
 }
 
 /** Strip query strings and tokens from a URL before it reaches the summary or a filename. */
@@ -114,6 +118,12 @@ export function createBrowserVerifyTool(bindings: BrowserVerifyBindings = {}) {
           if (!/^https?:$/.test(new URL(url).protocol)) return { error: 'Only http(s) URLs can be verified.' };
         } catch {
           return { error: `Not a valid URL: ${url}` };
+        }
+        // Same SSRF line as fetchUrl: loopback is the dev server this tool exists for; any other
+        // private/link-local/metadata address (router admin, 169.254.169.254) is refused.
+        const topHost = new URL(url).hostname;
+        if (!LOCAL_HOSTS.has(topHost) && await isHostResolvingToPrivate(topHost)) {
+          return { error: `Refusing to open ${topHost}: it resolves to a private or internal address. Verify the dev server on localhost instead.` };
         }
         const clean = cleanUrlForReport(url);
 

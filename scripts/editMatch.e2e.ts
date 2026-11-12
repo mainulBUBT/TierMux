@@ -5,7 +5,7 @@
  * buffer (CRLF files stay intact), the replacement is re-indented to where the code lives.
  * TARGET is src/agent/core/tools/v3/editMatch.ts — until 2026-09-05 this suite tested the legacy
  * src/edits copy the agent never runs. Run: npm run test:e2e:edit-match */
-import { applyHunk } from '../src/agent/core/tools/v3/editMatch';
+import { applyHunk, changedRegion } from '../src/agent/core/tools/v3/editMatch';
 
 let bad = 0;
 const ok = (n: string, c: boolean, d = '') => { console.log(`${c ? 'PASS' : 'FAIL'}  ${n}${d ? `   (${d})` : ''}`); if (!c) bad++; };
@@ -159,6 +159,46 @@ console.log('\n— Failure diagnostics: every error must be actionable —');
   const wide = `${'q'.repeat(4000)}\nconst b = 2;\n`;
   const long = err(apply(wide, `${'q'.repeat(4000)}\nconst zzz = 0;`, 'X'));
   ok('diagnostics stay bounded regardless of file line length', long.length < 600, `${long.length} chars`);
+}
+
+console.log('\n— 2026-11-12: open-source agent parity (aider/OpenCode/Codex/Gemini/Cline) —');
+{
+  // CRLF: the replacement follows the file's line ending; no lone LF, no swallowed \r.
+  const crlf = 'function a() {\r\n  return 1;\r\n}\r\nconst z = 2;\r\n';
+  const r1 = out(apply(crlf, 'function a() {\n  return 1;\n}', 'function a() {\n  return 2;\n}'));
+  ok('CRLF file stays pure CRLF after a multi-line LF edit', r1 === crlf.replace('return 1', 'return 2'), JSON.stringify(r1));
+
+  // Typographic punctuation folds for MATCHING; the replacement is what the model wrote.
+  const typo = 'msg = "it\u2019s done \u2014 ok";\nnext();\n';
+  const r2 = out(apply(typo, `msg = "it's done - ok";`, `msg = "finished";`));
+  ok('smart quote / em dash match their ASCII forms', r2 === 'msg = "finished";\nnext();\n', JSON.stringify(r2));
+
+  // readFile's line-number prefixes pasted into search (and replace) are stripped.
+  const src = 'const a = 1;\nconst b = 2;\nconst c = 3;\n';
+  const r3 = out(apply(src, '2\tconst b = 2;\n3\tconst c = 3;', '2\tconst b = 20;\n3\tconst c = 3;'));
+  ok('pasted cat -n prefixes are stripped from search and replace', r3 === 'const a = 1;\nconst b = 20;\nconst c = 3;\n', JSON.stringify(r3));
+
+  // Already applied: the replacement is there, the search is not.
+  const done = 'const retries = 5;\nrun();\n';
+  const e4 = err(apply(done, 'const retries = 3;', 'const retries = 5;'));
+  ok('an already-applied edit says so with the line', /already applied/.test(e4) && /line 1/.test(e4), e4);
+
+  // Closest block: stale context shows the real lines to copy (no re-read).
+  const file2 = 'function total(items) {\n  let sum = 0;\n  for (const i of items) sum += i.price;\n  return sum;\n}\n';
+  const e5 = err(apply(file2, 'function totals(item) {\n  let sum = 0;\n  for (const i of item) sum += i.price;', 'x'));
+  ok('a near-miss shows the closest real block, numbered', /Closest block in the file \(lines 1–3\)/.test(e5) && e5.includes('1\tfunction total(items) {'), e5);
+
+  // replaceAll: every exact occurrence; ambiguity error mentions it.
+  const many = 'foo();\nbar(foo);\nfoo();\n';
+  ok('replaceAll renames every occurrence', out(applyHunk(many, 'foo', 'baz', true)) === 'baz();\nbar(baz);\nbaz();\n');
+  ok('the ambiguity error offers replaceAll', /replaceAll/.test(err(apply(many, 'foo();', 'x();'))));
+
+  // changedRegion: the echo after a successful edit.
+  const reg = changedRegion('a\nb\nc\nd\ne\n', 'a\nb\nC\nd\ne\n', 1);
+  ok('changedRegion numbers the changed line with context', reg.includes('2\tb') && reg.includes('3\tC') && reg.includes('4\td') && !reg.includes('1\ta'), reg);
+  ok('changedRegion is empty for no change', changedRegion('x', 'x') === '');
+  const big = changedRegion(Array(100).fill('a').join('\n'), Array(100).fill('b').join('\n'));
+  ok('changedRegion summarizes a huge change instead of echoing it', /too many to echo/.test(big) && big.length < 200, big);
 }
 
 console.log(bad === 0 ? '\nALL PASS' : `\n${bad} FAILED`);

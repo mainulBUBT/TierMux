@@ -780,7 +780,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
                 if (dropped.length) {
                   diagLog('rp.fit', `overflow on ${c.platform}::${c.modelId} — dropping ${dropped.length} impossible candidate(s)`);
                   attempts.push(...dropped);
-                  candidates.length = kept.length;
+                  candidates.length = 0;
                   candidates.push(...kept);
                 }
               }
@@ -1108,7 +1108,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
                 if (dropped.length) {
                   diagLog('rp.fit', `overflow on ${c.platform}::${c.modelId} — dropping ${dropped.length} impossible candidate(s)`);
                   attempts.push(...dropped);
-                  candidates.length = kept.length;
+                  candidates.length = 0;
                   candidates.push(...kept);
                 }
               }

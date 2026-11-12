@@ -11,6 +11,7 @@ import {
   BackgroundTaskRegistry, RING_MAX, taskRegistryFor, killSessionTasks, killAllBackgroundTasks,
 } from '../src/agent/core/tools/taskRegistry';
 import { runWithWorkspaceRoot } from '../src/agent/core/tools/workspaceRoot';
+import { capMiddle } from '../src/agent/core/tools/capOutput';
 
 let failures = 0;
 const check = (label: string, ok: boolean, detail = ''): void => {
@@ -114,6 +115,32 @@ async function main(): Promise<void> {
       check('tail survives', task.buffer.includes('line-20000'));
       check('head is dropped', !task.buffer.includes('line-1\n'));
     }
+    reg.killAll();
+  }
+
+  console.log('\n— Synchronous output keeps its END: a test summary printed last survives the cap —');
+  {
+    const cmd = `node -e "for (let i = 0; i < 3000; i++) console.log('noise line ' + i); console.log('Tests: 3 failed, 12 passed')"`;
+    const r = await runWithWorkspaceRoot(os.tmpdir(), () => runCommand.execute({ command: cmd }));
+    check('the last line (the summary) is in the result', isStr(r) && r.includes('Tests: 3 failed, 12 passed'), isStr(r) ? r.slice(-300) : String(r));
+    check('the first lines are kept too', isStr(r) && r.includes('noise line 0\n'), '');
+    check('the cut is marked, not silent', isStr(r) && /omitted from the middle/.test(r), '');
+    check('a clean exit says so', isStr(r) && r.includes('Exit code: 0'), isStr(r) ? r.slice(-200) : '');
+    const m = capMiddle('HEAD\n' + 'x\n'.repeat(5000) + 'TAIL', 1000);
+    check('capMiddle keeps head and tail within budget', m.startsWith('HEAD') && m.endsWith('TAIL') && m.length < 1100, String(m.length));
+  }
+
+  console.log('\n— Ring trim moves the read cursor with it: output after a trim is still "new" —');
+  {
+    const reg = new BackgroundTaskRegistry();
+    const cmd = `node -e "process.stdout.write('x'.repeat(70000)); setTimeout(() => process.stdout.write('y'.repeat(20000) + 'LATE'), 400)"`;
+    const t = reg.start(cmd, { cwd: os.tmpdir() }).task!;
+    await waitFor('first burst', () => t.buffer.length >= 70_000);
+    reg.read(t.id);
+    await waitFor('second burst', () => t.buffer.includes('LATE'));
+    check('buffer was trimmed past the old cursor position', t.buffer.length < 70_000 + 20_000, String(t.buffer.length));
+    check('new output after the trim is unread (cursor moved with the trim)', t.buffer.length > t.readCursor, `${t.buffer.length} vs ${t.readCursor}`);
+    check('unread part is exactly the new output', t.buffer.length - t.readCursor === 20_004, String(t.buffer.length - t.readCursor));
     reg.killAll();
   }
 

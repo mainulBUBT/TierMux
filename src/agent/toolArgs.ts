@@ -2,7 +2,7 @@
 // openai-compat.ts rescues Groq-style `failed_generation` bodies through rescueInlineToolCalls,
 // then repairToolArguments coerces the args against the tool's JSON schema.
 
-interface JsonSchemaish {
+export interface JsonSchemaish {
   type?: string;
   properties?: Record<string, JsonSchemaish>;
   items?: JsonSchemaish;
@@ -37,11 +37,48 @@ function leadingBalancedJsonValue(text: string): unknown | undefined {
   return undefined;
 }
 
+/** True when `text` opens a JSON object/array that never closes — the shape of a tool call cut
+ *  off by the output-token limit (a big writeFile/editFile body), as opposed to malformed JSON. */
+export function isUnterminatedJson(text: string): boolean {
+  const t = text.trimStart();
+  if (t[0] !== '{' && t[0] !== '[') return false;
+  let depth = 0;
+  let inStr = false;
+  let escaped = false;
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i];
+    if (inStr) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') inStr = true;
+    else if (ch === '{' || ch === '[') depth++;
+    else if (ch === '}' || ch === ']') { depth--; if (depth === 0) return false; }
+  }
+  return true;
+}
+
 /** Un-stringify `value` against `schema` if it should be an array/object but arrived as a
  *  JSON-encoded string, recursing into items/properties so a nested stringified field is
  *  repaired too. Mutates in place; sets `state.changed` on any repair. */
 function repairValueAgainstSchema(value: unknown, schema: JsonSchemaish | undefined, state: { changed: boolean }): unknown {
   if (!schema) return value;
+
+  // Quoted scalars: `"offset": "10"`, `"background": "false"` — weak models quote everything,
+  // and zod rejects them. Unambiguous forms only; anything else is left for validation to name.
+  if (typeof value === 'string' && (schema.type === 'number' || schema.type === 'integer')) {
+    const t = value.trim();
+    if (/^-?\d+(\.\d+)?$/.test(t) && (schema.type === 'number' || !t.includes('.'))) {
+      state.changed = true;
+      return Number(t);
+    }
+  }
+  if (typeof value === 'string' && schema.type === 'boolean' && /^(true|false)$/i.test(value.trim())) {
+    state.changed = true;
+    return value.trim().toLowerCase() === 'true';
+  }
 
   if ((schema.type === 'array' || schema.type === 'object') && typeof value === 'string') {
     const trimmed = value.trim();

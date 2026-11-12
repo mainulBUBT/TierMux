@@ -8,6 +8,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { capMiddle } from '../capOutput';
 import { runShell } from '../shell';
 import { effectiveRootUri } from '../workspaceRoot';
 import { isDangerous } from '../../../../edits/commandClassify';
@@ -275,6 +276,9 @@ export function detectVerifyCommand(root: string): string | undefined {
  *  itself created or edited test files, running just those beats a full-suite pass that costs
  *  minutes on the free tier. Non-test edits map to no honest file list, so they keep the full
  *  suite — the wrong subset would verify nothing. */
+/** What the verify-fix round can show the model (engine.ts caps the prompt to the same). */
+const VERIFY_OUTPUT_CHARS = 6_000;
+
 export function resolveVerifyCommand(changed?: Array<{ path: string }>): string | undefined {
   const setting = vscode.workspace.getConfiguration('tiermux.agent').get<string>('verifyCommand', 'auto');
   const v = setting.trim();
@@ -329,7 +333,11 @@ export async function runVerifyCommand(command: string, signal?: AbortSignal): P
     // the approval policy would have stopped at.
     if (isDangerous(command)) return { ok: null, output: `Verify command looks destructive and was not run: ${command}` };
     const res = await runShell(command, { cwd: effectiveRootUri().fsPath, timeoutMs: 120_000, signal });
-    const output = ((res.error ? res.error + '\n' : '') + res.stdout + (res.stderr ? '\n' + res.stderr : '')).trim();
+    // Each stream keeps its own END: the fix round reads ~6k chars, and one combined cut let a
+    // noisy stream (warnings on stderr) push the other one's failure summary out entirely.
+    const errPart = res.stderr ? capMiddle(res.stderr, res.stdout ? 2_500 : VERIFY_OUTPUT_CHARS) : '';
+    const outPart = capMiddle(res.stdout, Math.max(1_000, VERIFY_OUTPUT_CHARS - errPart.length));
+    const output = ((res.error ? res.error + '\n' : '') + outPart + (errPart ? '\n' + errPart : '')).trim();
     if (res.exitCode === null) return { ok: null, output };
     return { ok: res.exitCode === 0, output };
   } catch (e) {

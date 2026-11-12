@@ -8,7 +8,7 @@ import { classifyConversation } from '../src/agent/routing';
 import { OpenAIResponsesProvider } from '../src/providers/openai-responses';
 import { OpenAICompatProvider } from '../src/providers/openai-compat';
 import { isDegenerateRepeat } from '../src/agent/core/routerProvider';
-import { rescueInlineToolCalls, adoptInlineToolCalls } from '../src/agent/toolArgs';
+import { rescueInlineToolCalls, adoptInlineToolCalls, repairToolArguments } from '../src/agent/toolArgs';
 
 let bad = 0;
 const ok = (n: string, c: boolean, d = '') => { console.log(`${c ? 'PASS' : 'FAIL'}  ${n}${d ? `   (${d})` : ''}`); if (!c) bad++; };
@@ -111,6 +111,25 @@ async function main() {
     ok('27. an aliased tool gets its argument names too', named?.toolName === 'grep' && JSON.parse(named.input).pattern === 'x' && !('query' in JSON.parse(named.input)), JSON.stringify(named));
     const argsOnly = await fix('grep', '{"path":"src","query":"x"}', new InvalidToolInputError({ toolName: 'grep', toolInput: '{}', cause: new Error('bad') }));
     ok('28. a right tool name with an imagined argument name needs no model call', JSON.parse(argsOnly?.input ?? '{}').pattern === 'x', JSON.stringify(argsOnly));
+
+    // 2026-11-12 (OpenCode tool-input-repair / Cline normalizeJsonLikeStringsForSchema parity):
+    // quoted scalars and a stringified array are coerced against the schema with no model call.
+    const schemaFix = (toolName: string, input: string, schema: unknown) => repair({
+      toolCall: { type: 'tool-call', toolCallId: 'c', toolName, input }, tools: { [toolName]: {} } as never,
+      inputSchema: async () => schema, error: new InvalidToolInputError({ toolName, toolInput: input, cause: new Error('bad') }), messages: [],
+    } as never);
+    const readSchema = { type: 'object', properties: { path: { type: 'string' }, offset: { type: 'number' }, limit: { type: 'number' } } };
+    const q = await schemaFix('readFile', '{"path":"a.ts","offset":"10","limit":null}', readSchema);
+    ok('29. quoted number coerced AND null stripped in one no-model pass', q !== null && JSON.parse(q.input).offset === 10 && !('limit' in JSON.parse(q.input)), JSON.stringify(q));
+    const bg = await schemaFix('runCommand', '{"command":"npm run dev","background":"true"}', { type: 'object', properties: { command: { type: 'string' }, background: { type: 'boolean' } } });
+    ok('30. quoted boolean coerced', bg !== null && JSON.parse(bg.input).background === true, JSON.stringify(bg));
+    const editSchema = { type: 'object', properties: { path: { type: 'string' }, edits: { type: 'array', items: { type: 'object', properties: { search: { type: 'string' }, replace: { type: 'string' } } } } } };
+    const st = await schemaFix('editFile', JSON.stringify({ path: 'a.ts', edits: JSON.stringify([{ search: 'a', replace: 'b' }]) }), editSchema);
+    ok('31. stringified edits[] un-stringified on a NATIVE call', st !== null && Array.isArray(JSON.parse(st.input).edits), JSON.stringify(st));
+    ok('32. an unparseable scalar is not guessed', repairToolArguments('{"path":"a.ts","offset":"ten"}', readSchema) === '{"path":"a.ts","offset":"ten"}');
+    // A call cut off by the output-token limit: no LLM repair (it would truncate again).
+    const cut = await schemaFix('writeFile', '{"path":"big.ts","content":"line1\\nline2\\n', { type: 'object', properties: {} });
+    ok('33. a truncated tool call skips the model repair', cut === null, JSON.stringify(cut));
   }
 
   console.log('— the @@-block dialect (xKiro stealth/big-pickle, live 2026-11-12) —');

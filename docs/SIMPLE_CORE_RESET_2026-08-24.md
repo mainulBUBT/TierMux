@@ -177,6 +177,17 @@ narration SHIPS as the answer. The harness does not decide "this model should ha
 therefore retry." If users report a recurring failure shape, gather a live repro first, then
 add ONE targeted guard citing it. The tower is gone; keep it gone.
 
+## 2026-11-12 changes (mechanical; source study of five open-source agents)
+
+- **Step cap restored as a runaway backstop: default 200** (`DEFAULT_MAX_STEPS`). The 2026-11-11
+  "no cap" default removed the only bound on a fail/succeed/fail alternation, which
+  `notMakingProgress` cannot see (any success clears its table). Invariant 7 applies to a hit;
+  `maxStepsPerTurn: 0` still removes the cap. Plan's reading budget scales only with a USER-set cap.
+- **Focus pulse deleted** — it was a periodic in-loop reminder with no live repro, i.e. the deleted
+  "repeat reminders" family.
+- Tool-level only (no loop change): head+tail command output, schema coercion in repair's no-model
+  pass, no model repair for output-limit-truncated calls, editFile/readFile hints. See CHANGELOG.
+
 ## 2026-11-04 additions (all mechanical; repro: agentBench, keyless free tiers)
 
 - **Auto waits for capacity.** When every model is cooling down, one step waits for the first due

@@ -6,6 +6,7 @@ import { tool } from 'ai';
 import { z } from 'zod';
 import { resolveReadablePath } from '../resolvePath';
 import { capToolOutput } from '../capOutput';
+import { fileNotFoundMessage } from './pathSuggest';
 import { extract } from '../../../../context/symbolExtract';
 
 const MAX_CHARS = 30_000;
@@ -52,7 +53,7 @@ async function readOne(
   try {
     text = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
   } catch {
-    return `File not found: ${path}`;
+    return fileNotFoundMessage(path, uri);
   }
 
   const lines = text.split('\n');

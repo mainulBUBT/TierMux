@@ -363,8 +363,8 @@
         },
         "tiermux.agent.maxStepsPerTurn": {
           "type": "number",
-          "default": 0,
-          "description": "Cap on tool-loop steps in a SINGLE agent turn. 0 (default) = no step cap — like the production coding agents, the turn runs until the work is done and is bounded by the PROGRESS guards (repeat/stuck detection, auto-compact, the Stop button), not a step count. Set a number to re-impose a hard cap that pauses the turn as resumable."
+          "default": 200,
+          "description": "Cap on tool-loop steps in a SINGLE agent turn. The default 200 is a runaway backstop, not a working limit — real turns end long before it, bounded by the progress guards (repeat/stuck detection, auto-compact, Stop). A hit pauses the turn as resumable and Continue picks it up. Set a lower number for quota-constrained unattended runs (plan mode's reading budget scales with it), or 0 for no cap at all."
         },
         "tiermux.agent.connectTimeoutMs": {
           "type": "number",
@@ -718,7 +718,6 @@
     "test:e2e:opencode-lane:bun-live": "command -v bun >/dev/null || { echo 'bun is required for the live costume check: the Zen network fingerprint refuses Node. Install it from https://bun.sh'; exit 2; } && esbuild scripts/opencodeLane.e2e.ts --bundle --platform=node --format=cjs --alias:vscode=$(pwd)/scripts/vscodeMockAlias.cjs --outfile=dist/opencodeLaneBun.e2e.cjs && LIVE=1 bun dist/opencodeLaneBun.e2e.cjs",
     "test:e2e:bun-shim": "esbuild scripts/bunShim.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/bunShim.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/bunShim.e2e.cjs",
     "test:e2e:bun-install": "esbuild scripts/bunInstall.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/bunInstall.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/bunInstall.e2e.cjs",
-    "test:e2e:focus-pulse": "esbuild scripts/focusPulse.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/focusPulse.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/focusPulse.e2e.cjs",
     "test:e2e:background-tasks": "esbuild scripts/backgroundTasks.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/backgroundTasks.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/backgroundTasks.e2e.cjs",
     "test:e2e:browser-verify": "esbuild scripts/browserVerify.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/browserVerify.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/browserVerify.e2e.cjs",
     "test:e2e:file-map-symbols": "esbuild scripts/fileMapSymbols.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/fileMapSymbols.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/fileMapSymbols.e2e.cjs",

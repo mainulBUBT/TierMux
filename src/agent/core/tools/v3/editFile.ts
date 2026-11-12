@@ -8,7 +8,8 @@ import { z } from 'zod';
 import { resolveWorkspacePath } from '../resolvePath';
 import { withPathLock } from '../pathLock';
 import type { ToolsetBindings } from './index';
-import { applyHunk } from './editMatch';
+import { applyHunk, changedRegion } from './editMatch';
+import { fileNotFoundMessage } from './pathSuggest';
 import { syntaxNote } from '../workspace/syntaxCheck';
 import {
   NEW_DIAGNOSTICS_MARKER,
@@ -34,6 +35,7 @@ export async function diagnosticsNote(uri: vscode.Uri, before: Set<string>): Pro
 const hunkSchema = z.object({
   search: z.string().describe('Exact existing text to find.'),
   replace: z.string().describe('Text to replace it with.'),
+  replaceAll: z.boolean().optional().describe('Replace EVERY exact occurrence of search (renames). Default false: search must match once.'),
 });
 
 export function createEditFileTool(bindings: ToolsetBindings = {}) {
@@ -43,7 +45,8 @@ export function createEditFileTool(bindings: ToolsetBindings = {}) {
       + 'including whitespace and indentation; readFile output shows `cat -n`-style line numbers — '
       + 'those are annotations, never include them in `search`. For multiple changes in the SAME '
       + 'file, pass `edits: [{search, replace}, ...]` — they apply atomically in one read/write. '
-      + 'Use the single `search`/`replace` form for a one-off change.',
+      + 'Use the single `search`/`replace` form for a one-off change; `replaceAll: true` changes every '
+      + 'occurrence (a rename). The result echoes the changed lines, so no re-read is needed.',
     inputExamples: [
       { input: { path: 'src/app.ts', search: "const retries = 3;", replace: "const retries = 5;" } },
       { input: { path: 'src/app.ts', edits: [{ search: "import a from './a';", replace: "import a from './a';\nimport b from './b';" }, { search: "a();", replace: "a();\nb();" }] } },
@@ -52,25 +55,26 @@ export function createEditFileTool(bindings: ToolsetBindings = {}) {
       path: z.string().describe('Workspace-relative file path.'),
       search: z.string().optional().describe('Exact existing text to find (single-hunk form).'),
       replace: z.string().optional().describe('Text to replace it with (single-hunk form).'),
+      replaceAll: z.boolean().optional().describe('Single-hunk form: replace EVERY exact occurrence of search.'),
       edits: z.array(hunkSchema).optional().describe('Ordered list of {search, replace} hunks for multiple changes in one file.'),
     }),
-    execute: async ({ path, search, replace, edits }): Promise<string | { error: string }> => {
+    execute: async ({ path, search, replace, replaceAll, edits }): Promise<string | { error: string }> => {
       try {
         if (!path) return { error: 'Missing required "path" argument.' };
         const hunks = Array.isArray(edits) && edits.length > 0
           ? edits
           : search !== undefined
-            ? [{ search, replace: replace ?? '' }]
+            ? [{ search, replace: replace ?? '', replaceAll }]
             : undefined;
         if (!hunks) return { error: 'Missing required "search" argument (or pass "edits" for multiple hunks).' };
 
         const uri = resolveWorkspacePath(path);
-        const done = await withPathLock(uri, async (): Promise<{ error: string } | { before: Set<string> }> => {
+        const done = await withPathLock(uri, async (): Promise<{ error: string } | { before: Set<string>; region: string }> => {
           let text: string;
           try {
             text = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
           } catch {
-            return { error: `File not found: ${path}` };
+            return { error: await fileNotFoundMessage(path, uri) };
           }
           // Checkpoint baseline BEFORE mutating (timing is the whole point — see ToolsetBindings).
           try { bindings.onBeforeWrite?.(uri, text); } catch { /* checkpointing must never block an edit */ }
@@ -79,8 +83,9 @@ export function createEditFileTool(bindings: ToolsetBindings = {}) {
           let before = new Set<string>();
           try { before = workspaceErrorSignatures(vscode.languages.getDiagnostics()); } catch { /* unavailable */ }
 
+          const original = text;
           for (let i = 0; i < hunks.length; i++) {
-            const next = applyHunk(text, hunks[i].search, hunks[i].replace);
+            const next = applyHunk(text, hunks[i].search, hunks[i].replace, hunks[i].replaceAll === true);
             if ('error' in next) {
               // WHICH hunk failed, and that none were written (hunks apply to an in-memory copy;
               // the file is written once below), so the model knows to re-send all of them.
@@ -91,12 +96,13 @@ export function createEditFileTool(bindings: ToolsetBindings = {}) {
             text = next.text;
           }
 
+          if (text === original) return { error: 'The edit changes nothing — search and replace produce the same file. Nothing was written.' };
           await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(text));
-          return { before };
+          return { before, region: changedRegion(original, text) };
         });
         if ('error' in done) return done;
         const [syntax, diag] = await Promise.all([syntaxNote(uri.fsPath), diagnosticsNote(uri, done.before)]);
-        return `Edited ${path}.${syntax}${diag}`;
+        return `Edited ${path}.${done.region ? `\n${done.region}` : ''}${syntax}${diag}`;
       } catch (e) {
         return { error: e instanceof Error ? e.message : String(e) };
       }

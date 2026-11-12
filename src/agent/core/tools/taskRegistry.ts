@@ -94,7 +94,13 @@ export class BackgroundTaskRegistry {
     }
     const append = (d: Buffer): void => {
       task.buffer += d.toString();
-      if (task.buffer.length > RING_CAP + RING_SLACK) task.buffer = task.buffer.slice(-RING_CAP);
+      if (task.buffer.length > RING_CAP + RING_SLACK) {
+        const cut = task.buffer.length - RING_CAP;
+        task.buffer = task.buffer.slice(cut);
+        // The cursor indexes the buffer, so it moves with the trim — left in place, every later
+        // read compared against a length the buffer never reaches again and saw no new output.
+        task.readCursor = Math.max(0, task.readCursor - cut);
+      }
       task.lastOutputAt = this.now();
     };
     task.child.stdout?.on('data', append);

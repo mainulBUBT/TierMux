@@ -16,7 +16,7 @@ import {
   type ToolSet,
 } from 'ai';
 import type { LanguageModelV4ToolCall } from '@ai-sdk/provider';
-import { normalizeDialectParams } from '../toolArgs';
+import { isUnterminatedJson, normalizeDialectParams, repairToolArguments, type JsonSchemaish } from '../toolArgs';
 
 const REPAIR_BUDGET_PER_TURN = 3;
 
@@ -105,14 +105,22 @@ export function makeRepairViaModelSelfCorrection(ctx: { model: LanguageModel; si
       if (real) return { ...toolCall, toolName: real, input: normalizeDialectParams(real, toolCall.input) };
     }
 
-    // No-model first pass: weak models send `null` for an unset optional param, which zod rejects.
+    // No-model first pass, all three at once (the SDK repairs a call only once): `null` for an
+    // unset optional param, values the schema can coerce (quoted numbers/booleans, a stringified
+    // `edits` array — repairToolArguments), and another harness's parameter names. Each was an
+    // LLM repair call on a rate-limited lane before.
     if (InvalidToolInputError.isInstance(error)) {
-      const stripped = withoutNullKeys(toolCall.input);
-      if (stripped !== undefined) return { ...toolCall, input: stripped };
-      const renamed = normalizeDialectParams(toolCall.toolName, toolCall.input);
-      if (renamed !== toolCall.input) return { ...toolCall, input: renamed };
+      const schema = await Promise.resolve(inputSchema({ toolName: toolCall.toolName })).catch(() => undefined);
+      let input = withoutNullKeys(toolCall.input) ?? toolCall.input;
+      input = repairToolArguments(input, schema as JsonSchemaish | undefined);
+      input = normalizeDialectParams(toolCall.toolName, input);
+      if (input !== toolCall.input) return { ...toolCall, input };
     }
 
+    // A call cut off by the output-token limit: asking the same model to re-emit the same
+    // oversized payload truncates again — up to the whole budget of calls for nothing. The SDK's
+    // tool error ("JSON parsing failed … end of JSON input") reaches the model instead.
+    if (InvalidToolInputError.isInstance(error) && isUnterminatedJson(toolCall.input)) return null;
     if (used >= REPAIR_BUDGET_PER_TURN) return null; // give up → SDK invalid-path takes over
     used++;
 

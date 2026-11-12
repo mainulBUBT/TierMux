@@ -83,6 +83,7 @@ export function createRunCommandTool(bindings: CommandBindings = {}) {
         const notes: string[] = [];
         if (res.error) notes.push(res.error.replace(/\.$/, ''));
         else if (res.exitCode !== 0 && res.exitCode !== null) notes.push(`Exit code: ${res.exitCode} (command FAILED)`);
+        else if (res.exitCode === 0) notes.push('Exit code: 0');
         const withNotes = body + (notes.length ? `\n\n[${notes.join(' | ')}]` : '');
         return capToolOutput(withNotes, MAX_CHARS, 'Re-run piping through head/grep/tail to narrow the output.');
       } catch (e) {

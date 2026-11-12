@@ -5,6 +5,41 @@ All notable changes to TierMux are documented here. The format is loosely
 
 ## [Unreleased]
 
+### Fixed — open-source agent parity, wave 0+1 (2026-11-12)
+
+Source-level study of OpenCode, Cline, Codex CLI, aider and Gemini CLI (clones of 2026-11-11/12);
+every item is mechanical — no extra model call, no answer judging.
+
+- **Command output keeps its END.** `runShell` kept the first 10 KB of each stream and dropped the
+  rest silently — the test summary, printed last, never reached the model, nor the verify-fix round
+  (which also cut to the first 6k). Now a head + rolling tail per stream with an explicit "omitted
+  from the middle" marker; the verify prompt keeps each stream's end; a clean run says `Exit code: 0`.
+- **Step cap is a 200-step runaway backstop** (was unlimited since 2026-11-11). A
+  fail/succeed/fail alternation clears the repeat-failure table on every success, so nothing bounded
+  it. A hit is the resumable pause; `0` still means no cap. Plan mode's reading budget is 15 again
+  unless the user sets the cap (it had silently become 60).
+- **Focus pulse removed.** No live repro (core-reset rule), Cline itself retired the Focus Chain it
+  imitated, and the todo list already sits verbatim in the transcript.
+- **Router: a context-overflow drop no longer duplicates the chain.** `candidates.length =
+  kept.length` before re-pushing left dropped models in and tried the overflowed one again.
+- **browserVerify SSRF.** Private/link-local/metadata top-level URLs are refused (loopback stays —
+  it is the dev server); a public page can no longer load the user's localhost services.
+- **Background tasks: reads after the ring buffer trims see new output** (the cursor moves with it).
+- **Tool-call repair without a model call:** quoted numbers/booleans and a stringified `edits` array
+  are coerced against the schema in the no-model pass (with null-strip and param aliases, all at
+  once); a call cut off by the output limit skips the model repair that would truncate again.
+- **editFile:**
+  - success echoes the changed lines (numbered), so no re-read before the next hunk;
+  - "already applied" when the replacement is already in the file (failover/Continue re-sends);
+  - a miss shows the closest real block to copy;
+  - `replaceAll` for renames;
+  - smart quotes/dashes/odd spaces match their ASCII forms;
+  - CRLF files stay CRLF;
+  - pasted `cat -n` line-number prefixes are stripped;
+  - an edit that changes nothing is refused instead of reported as done.
+- **readFile/editFile "Did you mean":** a missing file names near matches (extension, case,
+  substring, edit distance) or the nearest existing folder.
+
 ### Changed
 
 - **No step cap by default — turns run until the work is done.** Production coding agents
