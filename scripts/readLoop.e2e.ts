@@ -150,6 +150,49 @@ async function main() {
     ok('the work done so far survives for Continue, once', (r.workMessages ?? []).filter((x) => x.role === 'tool').length === 1 && JSON.stringify(r.workMessages).includes('readFile'), JSON.stringify(r.workMessages).slice(0, 200));
   }
 
+  // ── 3d. The stream ended WITHOUT a completion signal (ai >= 7.0.149 finishReason 'interrupted'): the same
+  //        resumable provider pause — the partial reply ships, nothing is continued or folded onto it, and a call
+  //        the cut step had streamed is neither left spinning in the UI nor left dangling in the transcript ──
+  {
+    // Step 1 reads a file; step 2 starts the answer and the connection closes before the finish frame.
+    const cut = createMockModel([
+      { toolCalls: [{ toolName: 'readFile', input: { path: 'A.php' } }] },
+      { text: 'A.php fails because of ', finish: 'interrupted' },
+    ] as never, 'interrupted-text');
+    const r = await run(cut, 'agent');
+    ok('the cut turn pauses and names the provider stop', r.paused === true && (r as { stopReason?: string }).stopReason === 'provider' && !r.failed, JSON.stringify({ paused: r.paused, stop: (r as { stopReason?: string }).stopReason, failed: r.failed, finish: r.finishReason }));
+    ok('the partial reply ships as it was cut', r.text === 'A.php fails because of ', JSON.stringify(r.text));
+    ok('nothing runs on top of it — no nudge, no length pass', cut.calls.length === 2, `${cut.calls.length} model calls`);
+    ok('the work done before the cut survives for Continue', (r.workMessages ?? []).filter((x) => x.role === 'tool').length === 1, JSON.stringify(r.workMessages).slice(0, 160));
+
+    // The cut hits a TOOL step: the call streamed, its execution never happened.
+    const cutTool = createMockModel([
+      { toolCalls: [{ toolName: 'readFile', input: { path: 'A.php' } }] },
+      { text: 'Now B.php.', toolCalls: [{ toolName: 'readFile', input: { path: 'B.php' } }], finish: 'interrupted' },
+    ] as never, 'interrupted-tool');
+    const tools: string[] = [];
+    const rt = await run(cutTool, 'agent', { onTool: (e) => tools.push(`${e.name}:${e.state}`) });
+    const keptCalls = (rt.workMessages ?? []).flatMap((x) => (x.tool_calls ?? []).map((c) => c.function.name));
+    ok('the unexecuted call is closed as an error, never left running', tools.join(',') === 'readFile:running,readFile:done,readFile:running,readFile:error', tools.join(','));
+    ok('and is not left dangling in the transcript Continue will send', JSON.stringify(keptCalls) === JSON.stringify(['readFile']) && (rt.workMessages ?? []).filter((x) => x.role === 'tool').length === 1, JSON.stringify(keptCalls));
+    ok('its narration is not shipped as the reply', rt.text === '', JSON.stringify(rt.text));
+    ok('the turn is the same provider pause, after two model calls', rt.paused === true && (rt as { stopReason?: string }).stopReason === 'provider' && cutTool.calls.length === 2, JSON.stringify({ paused: rt.paused, stop: (rt as { stopReason?: string }).stopReason, calls: cutTool.calls.length }));
+
+    // Reasoning streamed, the connection dropped before any text: no fold, no half a thought as the answer.
+    const cutReasoning = createMockModel([{ reasoning: 'We need to investigate', finish: 'interrupted' }] as never, 'interrupted-reasoning');
+    const rr = await run(cutReasoning, 'agent');
+    ok('reasoning from a cut stream is not promoted to the reply', !rr.text.includes('We need to investigate') && rr.paused === true && (rr as { stopReason?: string }).stopReason === 'provider', JSON.stringify({ text: rr.text, paused: rr.paused, stop: (rr as { stopReason?: string }).stopReason }));
+
+    // An earlier step's planning narration is not the reply to a turn whose last step was cut silent.
+    const cutSilent = createMockModel([
+      { toolCalls: [{ toolName: 'readFile', input: { path: 'A.php' } }] },
+      { text: 'Let me also check B.php.', toolCalls: [{ toolName: 'readFile', input: { path: 'B.php' } }] },
+      { finish: 'interrupted' },
+    ] as never, 'interrupted-silent');
+    const rs = await run(cutSilent, 'agent');
+    ok('a silent cut ships no earlier narration as the answer', rs.text === '' && rs.paused === true && cutSilent.calls.length === 3, JSON.stringify({ text: rs.text, paused: rs.paused, calls: cutSilent.calls.length }));
+  }
+
   // ── 4. Evidence retention: a big read survives six more tool results in every mode ───
   {
     const steps: Array<Record<string, unknown>> = [{ toolCalls: [{ toolName: 'readFile', input: { path: 'A.php' } }] }];

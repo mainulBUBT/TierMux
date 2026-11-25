@@ -28,7 +28,7 @@ export async function structurePlanSteps(planText: string): Promise<string[] | n
     const model = modelOverrideForTests ?? createRouterProvider({ taskKind: 'plan' });
     const result = await generateText({
       model,
-      system: 'Extract the concrete action steps from this plan as a clean, deduplicated list. '
+      instructions: 'Extract the concrete action steps from this plan as a clean, deduplicated list. '
         + 'One step per array entry, imperative mood, no numbering/bullets in the text itself. '
         + 'Preserve the file/symbol names the plan already names. Do not invent new steps. '
         + 'A before-→after text change (e.g. old line vs new line, a diff, "change X to Y") is '

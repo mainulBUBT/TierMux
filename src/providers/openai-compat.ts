@@ -367,7 +367,9 @@ export class OpenAICompatProvider extends BaseProvider {
       }
       throw providerHttpError(res, `${this.name} API error ${res.status}: ${message ?? res.statusText}`);
     }
-    yield* this.readSseStream(this.onResponses(modelId) ? responsesSseAsChatSse(res, modelId) : res);
+    // `return yield*`: the delegate's return value (how the stream ended) must be THIS generator's
+    // return value too — a bare `yield*` statement would drop it on the floor.
+    return yield* this.readSseStream(this.onResponses(modelId) ? responsesSseAsChatSse(res, modelId) : res);
   }
 }
 

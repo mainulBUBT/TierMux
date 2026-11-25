@@ -22,6 +22,7 @@ extensionPath/
 .tiermux/memory.md
 # Kilo AI extension artifacts (separate extension, not part of TierMux)
 .kilo/
+.kilocode/
 # Claude Code / Antigravity IDE metadata
 .claude/
 .commandcode/

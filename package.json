@@ -399,6 +399,18 @@
           "minimum": 1000,
           "description": "Ceiling on time to the FIRST content chunk once a stream has started, counted from the first chunk of any kind. A live-but-silent stream is abandoned after this and the next model takes over. Custom/local endpoints are exempt."
         },
+        "tiermux.agent.streamIdleTimeoutMs": {
+          "type": "number",
+          "default": 60000,
+          "minimum": 0,
+          "description": "Ceiling on silence AFTER a stream has started answering. No data for this long mid-reply means the connection stalled: the stream is abandoned and the next model continues behind a visible seam. Counted from the most recent chunk, so a slow but flowing reply is never cut. 0 disables it. Custom/local endpoints and pinned models are exempt."
+        },
+        "tiermux.agent.hedgeAfterMs": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Delayed hedging, off by default (0). When a model has produced nothing this long after its request opened, the next model is started alongside it and whichever answers first serves the step. Costs one extra request, and only on the steps where the first model was that slow. Try 6000–10000. A pinned model never hedges (it runs alone)."
+        },
         "tiermux.agent.chainDeadlineMs": {
           "type": "number",
           "default": 60000,
@@ -684,6 +696,7 @@
     "test:e2e:capacity-wait": "esbuild scripts/capacityWait.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/capacityWait.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/capacityWait.e2e.cjs",
     "test:e2e:custom-endpoint": "esbuild scripts/customEndpoint.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/customEndpoint.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/customEndpoint.e2e.cjs",
     "test:e2e:auto-continue": "esbuild scripts/autoContinue.e2e.ts --bundle --platform=node --format=cjs --outfile=dist/autoContinue.e2e.cjs && node dist/autoContinue.e2e.cjs",
+    "test:e2e:steer": "esbuild scripts/steer.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/steer.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/steer.e2e.cjs",
     "test:e2e:todo-merge": "esbuild scripts/todoMerge.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/todoMerge.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/todoMerge.e2e.cjs",
     "test:e2e:read-loop": "esbuild scripts/readLoop.e2e.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/ripgrep --outfile=dist/readLoop.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/readLoop.e2e.cjs",
     "test:e2e:plan-decisions": "esbuild scripts/planDecisions.e2e.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/planDecisions.e2e.cjs && node -r ./scripts/vscodeMock.cjs dist/planDecisions.e2e.cjs",
@@ -763,8 +776,9 @@
   },
   "dependencies": {
     "@ai-sdk/provider": "^4.0.17",
+    "@ai-sdk/provider-utils": "^5.0.83",
     "@vscode/ripgrep": "^1.18.0",
-    "ai": "^7.0.107",
+    "ai": "^7.0.181",
     "diff2html": "^3.4.56",
     "jsdom": "^29.0.2",
     "mammoth": "^1.12.0",

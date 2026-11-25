@@ -120,6 +120,11 @@ export interface AgentOpts {
   onSelectionRationale?: (info: SelectionRationaleInfo) => void;
   onKeyRotated?: (info: { platform: string; keyIndex: number; keyTotal: number }) => void;
   onStep: (phase: string, label: string) => void;
+  /** Called once the turn's model loop is running, with a way to inject a message MID-turn:
+   *  `steer(text)` adds it to the model's input at the NEXT step boundary (ai v7 steering) and
+   *  resolves true once accepted. False when no loop is there to take it (the turn ended, or it
+   *  is between passes) — the host then queues the message exactly as before. */
+  onSteerReady?: (steer: (text: string) => Promise<boolean>) => void;
   onTodos: (todos: TodoItem[]) => void;
   /** Checkpoint baseline — fired by the v3 write tools AFTER reading a file's pre-write
    *  content but BEFORE mutating it (null = about to be created). The host wires this to

@@ -5,6 +5,61 @@ All notable changes to TierMux are documented here. The format is loosely
 
 ## [Unreleased]
 
+### Changed — AI SDK 7.0.181 (2026-11-24)
+
+- **A reply cut off by a dropped connection is a resumable pause, not a "complete" answer.**
+  AI SDK 7.0.149 reports `finishReason: 'interrupted'` when a provider's stream ends before its
+  finish frame. TierMux now treats it like a mid-turn failure: the partial text stays, the turn
+  shows Continue, and nothing is continued, verified or folded on top of it. A tool call the cut
+  step had started streaming is marked "Not run" instead of spinning forever, and is left out of
+  the transcript so Continue sends providers a valid one. The router reports the cut when a stream
+  closes with neither a `finish_reason` nor a `[DONE]` terminator; a provider that ends on `[DONE]`
+  without ever sending a finish reason is still treated as complete.
+- **`ai` 7.0.181, `@ai-sdk/provider` 4.0.39, `@ai-sdk/provider-utils` 5.0.83** (the last is now a
+  direct dependency). Long turns step faster: the SDK no longer re-validates the whole transcript on
+  every step, and a cancelled generation stops pending tool-call repairs. `system` became
+  `instructions` at the three model calls; the old name is deprecated.
+
+### Fixed — failover and resumability (2026-11-24)
+
+- **A reply that stalls mid-stream no longer hangs the turn.** The existing timeouts only covered
+  the start of a stream. Once a model had begun answering, a connection that went silent hung until
+  Node's own five-minute body timeout and then failed the turn without trying another model. A new
+  `tiermux.agent.streamIdleTimeoutMs` (default 60000, 0 turns it off) abandons a stream that has sent
+  nothing for that long: the staller goes into cooldown and the next model continues behind the
+  visible "connection dropped" seam. It is counted from the most recent chunk, so a slow but flowing
+  reply is never cut. Pinned models and custom endpoints are exempt, like the other failover gates.
+- **Opt-in delayed hedging** (`tiermux.agent.hedgeAfterMs`, default 0 = off). A slow start is the
+  one wait serial failover cannot hide: the first model is silent, and the next one is not even
+  dialled until a 30–60 s gate cuts the first. With hedging on, a model that has produced nothing
+  after that delay starts the next candidate alongside it, and whichever answers first serves the
+  step. The slower one is cancelled before it shows anything, so there is no seam and no duplicate
+  text, and the answer that was already arriving is reused rather than requested again. It costs
+  one extra request, and only on the steps where the first model was that slow, which is why it is
+  off by default (6000–10000 ms is the intended range). A pinned model never hedges.
+
+### Added — steering (2026-11-24)
+
+- **Send a message while the agent is still working.** A plain message typed during a running turn
+  now joins the model's input at its next step, so you can correct course without waiting for the
+  whole turn or pressing Stop. Slash commands, attachments and mode changes still wait for a turn
+  of their own, and anything the running turn cannot take is queued exactly as before.
+- **A follow-up pass that dies on the wire is now a resumable pause.** When a continuation,
+  verify-fix or audit pass failed on the network, only a diag line noted it and the turn shipped as
+  finished. For a nudge pass that meant an empty reply with no Continue button. The turn now reports
+  the provider stop and offers Continue.
+- **Diag trace:** each step line carries the model-vs-tool time split from the SDK (`engine.step`),
+  and SDK warnings (deprecated options, ignored settings) land in `engine.sdkWarning`.
+- **A reply whose connection is torn down now fails over.** When a socket dies mid-reply, Node's
+  fetch reports a bare `terminated` error with the real reason hidden inside it, which TierMux did
+  not recognise as a network failure — so the next model was never tried. It is now classified as a
+  dropped connection: the next model continues behind the visible seam. A drop that arrives after
+  the provider's own finish signal is treated as a complete reply. A pinned model still fails on its
+  own, with its original error and no "continuing with another" notice.
+- **Stop no longer cools the model down.** Stopping a reply mid-stream used to count as a failure
+  of the model that was answering, so Auto avoided a healthy model for 30 seconds afterwards. An
+  abort is the user's decision and leaves the model's record untouched.
+
 ## [3.0.6] — 2026-11-12
 
 ### Fixed — catalog

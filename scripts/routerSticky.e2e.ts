@@ -4,8 +4,8 @@
  * a different peer every step (cold provider, transcript re-sent, no prompt cache). One router
  * provider instance = one turn (engine.ts creates it per runTurn); stickiness lives there.
  * Cross-turn rotation, failover and cooldowns must keep working. Run: npm run test:e2e:router-sticky */
-import { setModelSources, recordOutcome, __resetTaskRoundCounters } from '../src/router/picker';
-import { createRouterProvider, dropUnfit, isContextOverflow } from '../src/agent/core/routerProvider';
+import { setModelSources, recordOutcome, isInCooldown, __resetTaskRoundCounters } from '../src/router/picker';
+import { createRouterProvider, dropUnfit, isConnectionDrop, isContextOverflow, isFailoverWorthy } from '../src/agent/core/routerProvider';
 import { ProviderHttpError } from '../src/providers/base';
 import type { FallbackEntry } from '../src/shared/types';
 import type { LanguageModelV4CallOptions } from '@ai-sdk/provider';
@@ -55,6 +55,53 @@ globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
 const step = (): LanguageModelV4CallOptions => ({
   prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
 } as unknown as LanguageModelV4CallOptions);
+
+/** Streams scripted SSE bodies — one script per model id — through a fresh router provider and
+ *  returns what the SDK would have seen. Restores fetch, config and sources afterwards. */
+async function streamOnce(
+  models: FallbackEntry[],
+  scripts: Record<string, (c: ReadableStreamDefaultController<Uint8Array>, signal?: AbortSignal) => void>,
+  cfg: Record<string, unknown>,
+  opts: { abortSignal?: AbortSignal; pinnedModel?: string; onFailover?: (from: string, reason: string) => void; onModelSelected?: (m: string) => void } = {},
+): Promise<{ parts: Array<{ type: string; delta?: string; finishReason?: { unified?: string } }>; dialed: string[]; text: string; finish: string; error: unknown }> {
+  const g = globalThis as { __tiermuxTestConfig?: Record<string, unknown> };
+  const prevCfg = g.__tiermuxTestConfig;
+  g.__tiermuxTestConfig = { ...(prevCfg ?? {}), ...cfg };
+  setModelSources(makeSources(models));
+  for (const m of models) recordOutcome(m.platform as string, m.modelId, true);
+  __resetTaskRoundCounters();
+  const dialed: string[] = [];
+  globalThis.fetch = (async (_url: unknown, init?: { body?: string; signal?: AbortSignal }) => {
+    const model = (JSON.parse(init?.body ?? '{}') as { model?: string }).model ?? '?';
+    dialed.push(model);
+    const body = new ReadableStream<Uint8Array>({ start: (c) => scripts[model]?.(c, init?.signal) });
+    return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  }) as typeof fetch;
+  type Part = { type: string; delta?: string; finishReason?: { unified?: string } };
+  const parts: Part[] = [];
+  let error: unknown;
+  try {
+    const turn = createRouterProvider({
+      taskKind: 'chat',
+      pinnedModel: opts.pinnedModel,
+      onFailover: opts.onFailover,
+      onModelSelected: opts.onModelSelected && ((_p: string, m: string) => opts.onModelSelected!(m)),
+    });
+    const { stream } = await turn.doStream({ ...(step() as object), abortSignal: opts.abortSignal } as LanguageModelV4CallOptions);
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        (async () => { for await (const p of stream as AsyncIterable<Part>) parts.push(p); })(),
+        new Promise<never>((_, reject) => { watchdog = setTimeout(() => reject(new Error('hung')), 5_000); }),
+      ]);
+    } finally { if (watchdog) clearTimeout(watchdog); }
+  } catch (e) { error = e; } finally { globalThis.fetch = realFetch; g.__tiermuxTestConfig = prevCfg; }
+  return {
+    parts, dialed, error,
+    text: parts.filter((p) => p.type === 'text-delta').map((p) => p.delta ?? '').join(''),
+    finish: parts.filter((p) => p.type === 'finish').map((p) => p.finishReason?.unified).join(','),
+  };
+}
 
 async function main() {
   const A = 'peer-a', B = 'peer-b';
@@ -210,6 +257,270 @@ async function main() {
     ok('20. dropUnfit keeps the current + fitting, names the dropped',
       kept.length === 2 && dropped.length === 1 && dropped[0].includes('small-m'), JSON.stringify(dropped));
     setModelSources(makeSources([entry('groq', A, 0), entry('groq', B, 1)]));
+  }
+
+  console.log('— a stream that stalls MID-REPLY is cut and the next model continues (2026-11-24) —');
+  {
+    const g = globalThis as { __tiermuxTestConfig?: Record<string, unknown> };
+    const prevCfg = g.__tiermuxTestConfig;
+    g.__tiermuxTestConfig = { ...(prevCfg ?? {}), streamIdleTimeoutMs: 300 };
+    const S = 'staller', C = 'continuer';
+    setModelSources(makeSources([entry('groq', S, 0), entry('groq', C, 1)]));
+    for (const m of [S, C]) recordOutcome('groq', m, true);
+    __resetTaskRoundCounters();
+    const dialed: string[] = [];
+    let stallerAborted = false;
+    const frame = (model: string, delta: string | null): Uint8Array => new TextEncoder()
+      .encode(`data: ${JSON.stringify({ id: 'x', object: 'chat.completion.chunk', model, choices: [{ index: 0, delta: delta === null ? {} : { content: delta }, finish_reason: delta === null ? 'stop' : null }] })}\n\n`);
+    globalThis.fetch = (async (_url: unknown, init?: { body?: string; signal?: AbortSignal }) => {
+      const model = (JSON.parse(init?.body ?? '{}') as { model?: string }).model ?? '?';
+      dialed.push(model);
+      let ctrl!: ReadableStreamDefaultController<Uint8Array>;
+      const body = new ReadableStream<Uint8Array>({ start(c) { ctrl = c; } });
+      if (model === S) {
+        // Half a reply, then the connection goes silent and never speaks again.
+        ctrl.enqueue(frame(model, 'half a reply, '));
+        init?.signal?.addEventListener('abort', () => {
+          stallerAborted = true;
+          try { ctrl.error(init.signal?.reason); } catch { /* already closed */ }
+        }, { once: true });
+      } else {
+        ctrl.enqueue(frame(model, 'the rest'));
+        ctrl.enqueue(frame(model, null));
+        ctrl.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+        ctrl.close();
+      }
+      return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    }) as typeof fetch;
+
+    type Part = { type: string; delta?: string; finishReason?: { unified?: string } };
+    const parts: Part[] = [];
+    let hung: string | undefined;
+    const turn = createRouterProvider({ taskKind: 'chat' });
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const { stream } = await turn.doStream(step());
+      await Promise.race([
+        (async () => { for await (const p of stream as AsyncIterable<Part>) parts.push(p); })(),
+        new Promise<never>((_, reject) => { watchdog = setTimeout(() => reject(new Error('hung')), 4_000); }),
+      ]);
+    } catch (e) {
+      hung = e instanceof Error ? e.message : String(e);
+    } finally {
+      if (watchdog) clearTimeout(watchdog);
+    }
+    const text = parts.filter((p) => p.type === 'text-delta').map((p) => p.delta ?? '').join('');
+    const finish = parts.filter((p) => p.type === 'finish').map((p) => p.finishReason?.unified).join(',');
+
+    ok('21. the stalled stream was cut, not left hanging', hung === undefined && stallerAborted, JSON.stringify({ hung, stallerAborted, parts: parts.map((p) => p.type) }));
+    ok('22. what it had already said stays on screen', text.startsWith('half a reply, '), JSON.stringify(text));
+    ok('23. the next model continues behind the visible seam, in the same text channel', text.includes('connection to the model dropped') && text.endsWith('the rest'), JSON.stringify(text));
+    ok('24. exactly two candidates were dialed', dialed.join(',') === `${S},${C}`, dialed.join(','));
+    ok('25. the stream then finished normally', finish === 'stop', finish);
+    ok('26. the staller is cooling down and the continuer is not', isInCooldown('groq', S) && !isInCooldown('groq', C), JSON.stringify({ staller: isInCooldown('groq', S), continuer: isInCooldown('groq', C) }));
+
+    globalThis.fetch = realFetch;
+    g.__tiermuxTestConfig = prevCfg;
+    for (const m of [S, C]) recordOutcome('groq', m, true);
+  }
+
+  console.log('— a slow but FLOWING reply is never cut: the stall gate counts from the most recent chunk —');
+  {
+    const g = globalThis as { __tiermuxTestConfig?: Record<string, unknown> };
+    const prevCfg = g.__tiermuxTestConfig;
+    g.__tiermuxTestConfig = { ...(prevCfg ?? {}), streamIdleTimeoutMs: 300 };
+    const F = 'flowing', C = 'continuer-2';
+    setModelSources(makeSources([entry('groq', F, 0), entry('groq', C, 1)]));
+    for (const m of [F, C]) recordOutcome('groq', m, true);
+    __resetTaskRoundCounters();
+    const dialed: string[] = [];
+    const enc = new TextEncoder();
+    globalThis.fetch = (async (_url: unknown, init?: { body?: string; signal?: AbortSignal }) => {
+      const model = (JSON.parse(init?.body ?? '{}') as { model?: string }).model ?? '?';
+      dialed.push(model);
+      let ctrl!: ReadableStreamDefaultController<Uint8Array>;
+      const body = new ReadableStream<Uint8Array>({
+        start(c) {
+          ctrl = c;
+          // First token at once, then a heartbeat every 150 ms — each gap is under the 300 ms
+          // gate, though the whole reply takes twice that. Then it finishes normally.
+          ctrl.enqueue(enc.encode(`data: ${JSON.stringify({ id: 'x', object: 'chat.completion.chunk', model, choices: [{ index: 0, delta: { content: 'slow but alive' }, finish_reason: null }] })}\n\n`));
+          const beat = (left: number) => {
+            if (left === 0) {
+              ctrl.enqueue(enc.encode(`data: ${JSON.stringify({ id: 'x', object: 'chat.completion.chunk', model, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\n`));
+              ctrl.enqueue(enc.encode('data: [DONE]\n\n'));
+              ctrl.close();
+              return;
+            }
+            ctrl.enqueue(enc.encode(`data: ${JSON.stringify({ id: 'x', object: 'chat.completion.chunk', model, choices: [] })}\n\n`));
+            setTimeout(() => beat(left - 1), 150);
+          };
+          setTimeout(() => beat(3), 150);
+        },
+      });
+      return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    }) as typeof fetch;
+
+    type Part = { type: string; delta?: string; finishReason?: { unified?: string } };
+    const parts: Part[] = [];
+    let hung: string | undefined;
+    const turn = createRouterProvider({ taskKind: 'chat' });
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const { stream } = await turn.doStream(step());
+      await Promise.race([
+        (async () => { for await (const p of stream as AsyncIterable<Part>) parts.push(p); })(),
+        new Promise<never>((_, reject) => { watchdog = setTimeout(() => reject(new Error('hung')), 4_000); }),
+      ]);
+    } catch (e) {
+      hung = e instanceof Error ? e.message : String(e);
+    } finally {
+      if (watchdog) clearTimeout(watchdog);
+    }
+    const text = parts.filter((p) => p.type === 'text-delta').map((p) => p.delta ?? '').join('');
+    const finish = parts.filter((p) => p.type === 'finish').map((p) => p.finishReason?.unified).join(',');
+
+    ok('27. a reply that keeps sending chunks is never cut, however slow', hung === undefined && finish === 'stop', JSON.stringify({ hung, finish }));
+    ok('28. it was answered by the same model start to finish — no failover, no seam', dialed.join(',') === F && text === 'slow but alive', JSON.stringify({ dialed, text }));
+    ok('29. and it is not punished for being slow', !isInCooldown('groq', F), String(isInCooldown('groq', F)));
+
+    globalThis.fetch = realFetch;
+    g.__tiermuxTestConfig = prevCfg;
+  }
+
+  console.log('— a stream that closes before its completion signal is reported as cut (ai >= 7.0.149 "interrupted") —');
+  {
+    /** One SSE frame; `finish` null = no finish_reason on the wire. */
+    const sse = (model: string, delta: Record<string, unknown>, finish: string | null = null): Uint8Array => new TextEncoder()
+      .encode(`data: ${JSON.stringify({ id: 'x', object: 'chat.completion.chunk', model, choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`);
+    const DONE = (): Uint8Array => new TextEncoder().encode('data: [DONE]\n\n');
+
+    // Content, then the connection closes: no finish_reason and no [DONE].
+    const a = await streamOnce([entry('groq', 'eof-plain', 0)], { 'eof-plain': (c) => { c.enqueue(sse('eof-plain', { content: 'half a repl' })); c.close(); } }, {});
+    ok('30. no finish_reason and no [DONE] ⇒ interrupted', a.finish === 'interrupted' && a.text === 'half a repl' && !a.error, JSON.stringify({ finish: a.finish, text: a.text }));
+
+    // Some gateways end on [DONE] without ever sending a finish_reason — that is a complete reply,
+    // and must not be flagged on every turn.
+    const b = await streamOnce([entry('groq', 'eof-done', 0)], { 'eof-done': (c) => { c.enqueue(sse('eof-done', { content: 'whole reply' })); c.enqueue(DONE()); c.close(); } }, {});
+    ok('31. [DONE] without a finish_reason is complete, not cut', b.finish === 'stop' && b.text === 'whole reply', JSON.stringify({ finish: b.finish, text: b.text }));
+
+    // A finish_reason followed by a plain close is the ordinary shape.
+    const d = await streamOnce([entry('groq', 'eof-fr', 0)], { 'eof-fr': (c) => { c.enqueue(sse('eof-fr', { content: 'ok' }, 'stop')); c.close(); } }, {});
+    ok('32. a finish_reason without [DONE] is complete too', d.finish === 'stop' && d.text === 'ok', d.finish);
+
+    // Tool calls that streamed but were never signalled complete must not run as a finished step.
+    const e = await streamOnce([entry('groq', 'eof-tool', 0)], { 'eof-tool': (c) => {
+      c.enqueue(sse('eof-tool', { tool_calls: [{ index: 0, id: 'call-1', type: 'function', function: { name: 'readFile', arguments: '{"path":"a' } }] }));
+      c.close();
+    } }, {});
+    ok('33. unterminated tool calls are reported interrupted, not as a finished tool step', e.finish === 'interrupted', JSON.stringify({ finish: e.finish, parts: e.parts.map((p) => p.type) }));
+  }
+
+  console.log('— delayed hedge (opt-in): a silent head is raced by the next candidate —');
+  {
+    // Releases a scripted body the way a real socket would when its request is aborted.
+    const abortable = (c: ReadableStreamDefaultController<Uint8Array>, signal?: AbortSignal): void => {
+      signal?.addEventListener('abort', () => { try { c.error(signal.reason); } catch { /* already closed */ } }, { once: true });
+    };
+    const answer = (c: ReadableStreamDefaultController<Uint8Array>, model: string, text: string): void => {
+      const frame = (delta: Record<string, unknown>, finish: string | null = null): Uint8Array => new TextEncoder()
+        .encode(`data: ${JSON.stringify({ id: 'x', object: 'chat.completion.chunk', model, choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`);
+      c.enqueue(frame({ content: text }));
+      c.enqueue(frame({}, 'stop'));
+      c.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+      c.close();
+    };
+
+    // H1: the head never speaks. After hedgeAfterMs the standby opens, answers, and serves the step.
+    const H1 = 'h1-head', S1 = 'h1-standby';
+    const failovers1: string[] = [];
+    const served1: string[] = [];
+    const h1 = await streamOnce([entry('groq', H1, 0), entry('groq', S1, 1)], {
+      [H1]: abortable,
+      [S1]: (c) => answer(c, S1, 'from the standby'),
+    }, { hedgeAfterMs: 250 }, { onFailover: (from, reason) => failovers1.push(`${from}: ${reason}`), onModelSelected: (m) => served1.push(m) });
+    ok('34. the standby answers a silent head — same channel, no seam', !h1.error && h1.finish === 'stop' && h1.text === 'from the standby', JSON.stringify({ finish: h1.finish, text: h1.text, error: h1.error instanceof Error ? h1.error.message : String(h1.error), parts: h1.parts.map((p) => p.type) }));
+    ok('35. each candidate was dialled exactly once (the standby is adopted, not re-requested)', h1.dialed.join(',') === `${H1},${S1}`, h1.dialed.join(','));
+    ok('36. the credit goes to the standby and the failover is reported', served1.join(',') === S1 && failovers1.length === 1 && failovers1[0].includes('answered first'), JSON.stringify({ served1, failovers1 }));
+    ok('37. the silent head cools down; the standby stays clean', isInCooldown('groq', H1) && !isInCooldown('groq', S1), JSON.stringify({ head: isInCooldown('groq', H1), standby: isInCooldown('groq', S1) }));
+
+    // H2: the head is slow but answers after the hedge opened — it wins, the standby is released unpenalised.
+    const H2 = 'h2-head', S2 = 'h2-standby';
+    const failovers2: string[] = [];
+    const served2: string[] = [];
+    const h2 = await streamOnce([entry('groq', H2, 0), entry('groq', S2, 1)], {
+      [H2]: (c, signal) => { abortable(c, signal); setTimeout(() => { try { answer(c, H2, 'from the head'); } catch { /* aborted */ } }, 600); },
+      [S2]: (c, signal) => { abortable(c, signal); setTimeout(() => { try { answer(c, S2, 'late standby'); } catch { /* released */ } }, 1500); },
+    }, { hedgeAfterMs: 250 }, { onFailover: (from, reason) => failovers2.push(`${from}: ${reason}`), onModelSelected: (m) => served2.push(m) });
+    ok('38. a slow head that answers anyway still serves — nothing of the standby leaks in', !h2.error && h2.finish === 'stop' && h2.text === 'from the head', JSON.stringify({ finish: h2.finish, text: h2.text }));
+    ok('39. with no failover reported and no candidate punished', failovers2.length === 0 && served2.join(',') === H2 && !isInCooldown('groq', H2) && !isInCooldown('groq', S2), JSON.stringify({ failovers2, served2, head: isInCooldown('groq', H2), standby: isInCooldown('groq', S2) }));
+
+    // H3: off by default — a silent head opens nothing.
+    const H3 = 'h3-head', S3 = 'h3-standby';
+    const ctl = new AbortController();
+    setTimeout(() => ctl.abort(), 700);
+    const h3 = await streamOnce([entry('groq', H3, 0), entry('groq', S3, 1)], { [H3]: abortable, [S3]: (c) => answer(c, S3, 'never') }, {}, { abortSignal: ctl.signal });
+    ok('40. with hedging off (the default) no standby is opened', h3.dialed.join(',') === H3, h3.dialed.join(','));
+  }
+
+  console.log('— a reply whose socket is torn down mid-stream (found by the 2026-11-25 live probe, never by a stub) —');
+  {
+    // What Node's fetch really throws when a socket dies mid-reply: a bare TypeError with the
+    // real reason hidden in `cause`. No stub ever produced it.
+    const drop = (): TypeError => Object.assign(new TypeError('terminated'), { cause: Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' }) });
+    const abort = new DOMException('This operation was aborted', 'AbortError');
+    ok('41. that error is a dropped connection; a user abort is not', isFailoverWorthy(drop()) && isConnectionDrop(drop()) && !isFailoverWorthy(abort),
+      `drop=${isFailoverWorthy(drop())} abort=${isFailoverWorthy(abort)}`);
+
+    const frame = (model: string, delta: Record<string, unknown>, finish: string | null = null): Uint8Array => new TextEncoder()
+      .encode(`data: ${JSON.stringify({ id: 'x', object: 'chat.completion.chunk', model, choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`);
+    const errText = (e: unknown): string => (e instanceof Error ? `${e.name}: ${e.message}` : String(e));
+    const SEAM = '\n\n*(connection to the model dropped — continuing with another)*\n\n';
+
+    // (a) Dropped mid-reply: the next model continues behind the seam and the dropper cools down.
+    const D = 'dropper', E = 'rescuer';
+    const failoversA: string[] = [];
+    const a = await streamOnce([entry('groq', D, 0), entry('groq', E, 1)], {
+      [D]: (c) => { c.enqueue(frame(D, { content: 'half a repl' })); setTimeout(() => c.error(drop()), 50); },
+      [E]: (c) => { c.enqueue(frame(E, { content: ' — finished' }, 'stop')); c.close(); },
+    }, {}, { onFailover: (from) => failoversA.push(from) });
+    ok('42. the reply continues with the next model behind the seam', !a.error && a.finish === 'stop' && a.text === `half a repl${SEAM} — finished`,
+      JSON.stringify({ error: errText(a.error), finish: a.finish, text: a.text }));
+    ok('43. the dropper is reported and cools down; its rescuer does not', failoversA.length === 1 && failoversA[0].includes(D) && isInCooldown('groq', D) && !isInCooldown('groq', E),
+      JSON.stringify({ failoversA, dropper: isInCooldown('groq', D), rescuer: isInCooldown('groq', E) }));
+
+    // (b) The same error AFTER the provider's finish frame is a complete reply on a badly ended body.
+    const F = 'badly-ended';
+    const failoversB: string[] = [];
+    const b = await streamOnce([entry('groq', F, 0)], {
+      [F]: (c) => { c.enqueue(frame(F, { content: 'all there' }, 'stop')); setTimeout(() => c.error(drop()), 30); },
+    }, {}, { onFailover: (from) => failoversB.push(from) });
+    ok('44. a drop after the finish frame keeps the reply instead of failing over', !b.error && b.finish === 'stop' && b.text === 'all there' && failoversB.length === 0 && !isInCooldown('groq', F),
+      JSON.stringify({ error: errText(b.error), finish: b.finish, text: b.text, failoversB, cooled: isInCooldown('groq', F) }));
+
+    // (c) Stop is the user's decision, not a failure of the model.
+    const G = 'stopped-by-user';
+    const ctl = new AbortController();
+    setTimeout(() => ctl.abort(), 150);
+    const c1 = await streamOnce([entry('groq', G, 0)], {
+      [G]: (c, signal) => {
+        c.enqueue(frame(G, { content: 'streaming' }));
+        signal?.addEventListener('abort', () => { try { c.error(signal.reason); } catch { /* already closed */ } }, { once: true });
+      },
+    }, {}, { abortSignal: ctl.signal });
+    ok('45. pressing Stop mid-reply does not cool the model down', c1.error !== undefined && !isInCooldown('groq', G),
+      JSON.stringify({ error: errText(c1.error), cooled: isInCooldown('groq', G) }));
+
+    // (d) A pinned model runs alone: a drop is its own visible failure — no seam, no failover notice.
+    const P = 'pinned-dropper';
+    const failoversD: string[] = [];
+    const d = await streamOnce([entry('groq', P, 0), entry('groq', E, 1)], {
+      [P]: (c) => { c.enqueue(frame(P, { content: 'half a repl' })); setTimeout(() => c.error(drop()), 50); },
+      [E]: (c) => { c.enqueue(frame(E, { content: 'should not run' }, 'stop')); c.close(); },
+    }, {}, { pinnedModel: `groq::${P}`, onFailover: (from) => failoversD.push(from) });
+    ok('46. a pinned model that drops fails on its own: original error, no seam, no other model dialled',
+      errText(d.error) === 'TypeError: terminated' && d.text === 'half a repl' && d.dialed.join(',') === P && failoversD.length === 0,
+      JSON.stringify({ error: errText(d.error), text: d.text, dialed: d.dialed, failoversD }));
   }
 
   globalThis.fetch = realFetch;

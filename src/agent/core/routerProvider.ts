@@ -12,7 +12,7 @@ import type {
   LanguageModelV4FilePart,
   LanguageModelV4Usage,
 } from '@ai-sdk/provider';
-import type { ChatMessage, ChatToolChoice, ChatToolDefinition, ReasoningEffort, Platform } from '../../shared/types';
+import type { ChatMessage, ChatCompletionChunk, ChatToolChoice, ChatToolDefinition, ReasoningEffort, Platform } from '../../shared/types';
 import { platformFlattensContent, resolveProvider } from '../../providers';
 import { ProviderHttpError } from '../../providers/base';
 import { selectModel, setModelSources, soonestRecoveryMs, getApiKeysFor, recordOutcome, recordRequest, noteModelFailure, noteQuotaHeaders, noteRetryAfter, isModelUnavailable, isFreeTierRefusal, noteFreeTierExhausted, rationaleForServed, isInCooldown, findCatalogModel, type ModelSources, type SelectionRationale } from '../../router/picker';
@@ -71,7 +71,25 @@ export function isFailoverWorthy(e: unknown): boolean {
       || e.status === 404 || e.status === 408 || e.status === 413 || e.status === 429
       || (e.status !== undefined && e.status >= 500);
   }
-  return e instanceof Error && /network|fetch failed|timed out|ECONN/i.test(e.message);
+  return e instanceof Error && (/network|fetch failed|timed out|ECONN/i.test(e.message) || isConnectionDrop(e));
+}
+
+/** A connection that dropped under us. When a socket is torn down mid-reply, Node's fetch fails
+ *  the body read with a bare `TypeError: terminated` and hides the real reason in `cause`
+ *  (`SocketError: other side closed`, code UND_ERR_SOCKET). The message alone matches none of the
+ *  network patterns above, so the turn did not fail over. Live repro 2026-11-25: a real local
+ *  socket destroyed mid-reply, readSseStream's reader rejecting with exactly that error. */
+export function isConnectionDrop(e: unknown): boolean {
+  if (!(e instanceof Error)) return false;
+  if (/terminated|other side closed|socket hang up|ECONNRESET|EPIPE/i.test(e.message)) return true;
+  let cause = (e as { cause?: unknown }).cause;
+  for (let depth = 0; cause != null && depth < 4; depth++) {
+    const c = cause as { code?: unknown; message?: unknown; cause?: unknown };
+    if (typeof c.code === 'string' && /^(UND_ERR_SOCKET|UND_ERR_(CONNECT|HEADERS|BODY)_TIMEOUT|ECONNRESET|EPIPE|ETIMEDOUT)/.test(c.code)) return true;
+    if (typeof c.message === 'string' && /other side closed|socket hang up|ECONNRESET|EPIPE/i.test(c.message)) return true;
+    cause = c.cause;
+  }
+  return false;
 }
 
 /** Failover time bounds read from settings (2026-09-22) — they were hard-coded before, so a
@@ -105,6 +123,24 @@ function firstContentTimeoutMs(): number {
   return agentNumberSetting('firstContentTimeoutMs', 30_000);
 }
 
+/** Ceiling on SILENCE once a stream has started answering: no chunk of any kind for this long
+ *  mid-reply ⇒ the stream is abandoned and the next model continues behind the seam. The two
+ *  gates above only cover the START of a stream — after the first content chunk nothing watched
+ *  the socket, so a connection that went silent mid-answer hung until Node's own 5-minute body
+ *  timeout and then failed the turn WITHOUT failover (that error is not a ProviderHttpError).
+ *  Counted from the most recent chunk, so a slow-but-flowing reply is never cut.
+ *  `tiermux.agent.streamIdleTimeoutMs` (default 60 000; 0 disables). Same exemption as the
+ *  other gates: never for pinned models or custom/local endpoints. Test: router-sticky. */
+function streamIdleTimeoutMs(): number {
+  try {
+    const vscode = require('vscode') as typeof import('vscode');
+    const v = vscode?.workspace?.getConfiguration?.('tiermux.agent')?.get<number>('streamIdleTimeoutMs', 60_000);
+    return typeof v === 'number' && v >= 0 ? v : 60_000;
+  } catch {
+    return 60_000; // headless/library caller with no vscode shim — routeOnce pattern
+  }
+}
+
 /** Stop STARTING new candidates once the chain has burned this long. Never interrupts a
  *  candidate already streaming — it only declines to open another one. Bounds the pathological
  *  case (every candidate unresponsive) at roughly this plus one connect timeout, instead of
@@ -113,6 +149,19 @@ function firstContentTimeoutMs(): number {
  *  past a minute the honest chain report beats another cold candidate). */
 function chainDeadlineMs(): number {
   return agentNumberSetting('chainDeadlineMs', 60_000);
+}
+
+/** Delayed hedge, opt-in. When a candidate has produced no content this long after the request
+ *  opened, the NEXT candidate is opened as a standby and whichever produces content first serves
+ *  the step. A slow start is the one wait serial failover cannot hide: the head is silent and the
+ *  next candidate is not even dialled until a 30–60 s gate cuts the head. The loser is aborted
+ *  before it has shown anything, and the standby's buffered chunks are adopted by the normal loop,
+ *  so it is never dialled twice. Costs one extra request on exactly the steps where the head was
+ *  that slow. Off by default — the owner deferred hedging in 2026-09 over free-tier 429 cascades.
+ *  `tiermux.agent.hedgeAfterMs` (default 0 = off). Never for a pinned model (it runs alone).
+ *  Test: router-sticky. */
+function hedgeAfterSetting(): number {
+  return agentNumberSetting('hedgeAfterMs', 0);
 }
 
 /** Every way an OpenAI-compatible provider spells "ran out of output budget". Only the exact
@@ -297,6 +346,9 @@ function toolResultToText(output: unknown): string {
  *  text-only, so the picture rides in a user message right after the tool results — the shape
  *  Cline/OpenCode use). withoutToolImages finds these by this prefix. */
 export const TOOL_IMAGE_LEAD = '[Image returned by the ';
+
+/** Shown when a second model continues a reply the first one dropped mid-stream. */
+const TAKEOVER_SEAM = '\n\n*(connection to the model dropped — continuing with another)*\n\n';
 /** Tool images kept as pixels in a request; older ones become a one-line note. Each costs a
  *  vision model ~1k+ tokens on every following step. */
 const MAX_TOOL_IMAGES = 2;
@@ -857,6 +909,9 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             warnings: [],
           };
           } catch (e) {
+            // An abort is the user's Stop (or a parent's deadline), not a failure of the model.
+            // Live probe 2026-11-25: pressing Stop mid-reply put a healthy model into cooldown.
+            if (options.abortSignal?.aborted) throw options.abortSignal.reason ?? e;
             lastError = e;
             candidateError = e;
             recordOutcome(c.platform, c.modelId, false);
@@ -931,6 +986,105 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
         const refusals: FreeTierRefusals = { anonymous: false, keyed: false };
         const attempts: string[] = [];
         let startedAt = Date.now();
+
+        // ── Delayed hedge (opt-in — see hedgeAfterSetting) ────────────────────────────────────
+        // One standby per step at most. It is opened while a silent head is still racing, pulls
+        // chunks only until it has content, and is then either adopted by the normal loop when the
+        // turn reaches its candidate (buffered chunks first, live stream after) or dropped.
+        interface Standby {
+          c: Candidate;
+          /** The key its request was opened with — adoption only matches the loop's same key. */
+          apiKey: string;
+          iterator: AsyncIterator<ChatCompletionChunk>;
+          buffered: ChatCompletionChunk[];
+          hasContent: boolean;
+          ctl: AbortController;
+          deadline: ReturnType<typeof setTimeout>;
+          /** Set by the head currently racing this standby — called when the standby wins. */
+          onWin?: () => void;
+        }
+        let standby: Standby | undefined;
+        /** The candidate that lost its race: its remaining keys are skipped, so the loop lands on
+         *  the standby that beat it instead of retrying the loser with its next key. */
+        let lostRace: Candidate | undefined;
+        const hedgeAfter = providerOpts.pinnedModel ? 0 : hedgeAfterSetting();
+        const isContent = (chunk: ChatCompletionChunk): boolean => {
+          const choice = chunk.choices?.[0];
+          if (!choice) return false;
+          const delta = choice.delta ?? {};
+          return !!delta.content || (delta.tool_calls?.length ?? 0) > 0 || !!choice.finish_reason
+            || !!reasoningFromDelta(delta as unknown as Record<string, unknown>);
+        };
+        const dropStandby = (s: Standby): void => {
+          clearTimeout(s.deadline);
+          s.onWin = undefined;
+          s.ctl.abort(new Error('standby dropped'));
+          void s.iterator.return?.(undefined).catch(() => undefined);
+          if (standby === s) standby = undefined;
+        };
+        const openStandby = async (index: number): Promise<Standby | undefined> => {
+          if (index >= candidates.length) await extend(); // a sticky head defers the chain until now
+          const c = candidates[index];
+          const provider = c && resolveProvider(c.platform, c.modelId);
+          const apiKey = c?.apiKeys[0];
+          if (!c || !provider || !apiKey || deadPlatforms.has(c.platform)) return undefined;
+          const ctl = new AbortController();
+          const iterator = provider.streamChatCompletion(apiKey, candidateSeesImages(c) ? messages : withoutToolImages(messages), c.modelId, {
+            temperature: options.temperature,
+            max_tokens: options.maxOutputTokens,
+            tools,
+            parallel_tool_calls: true,
+            reasoningEffort: providerOpts.effort,
+            sessionId: providerOpts.sessionId,
+            abortSignal: options.abortSignal ? AbortSignal.any([options.abortSignal, ctl.signal]) : ctl.signal,
+            timeoutMs: connectTimeoutFor(c.platform),
+            onResponseHeaders: (h: Headers) => noteQuotaHeaders(c.platform, c.modelId, h),
+          })[Symbol.asyncIterator]();
+          const s: Standby = { c, apiKey, iterator, buffered: [], hasContent: false, ctl, deadline: undefined! };
+          standby = s;
+          diagLog('rp.hedge', `${c.platform}::${c.modelId} opened as a standby`);
+          // Its own bound: a standby with no content after this long is dropped, unpenalised — the
+          // normal loop dials and judges that candidate itself if the turn ever gets there.
+          s.deadline = setTimeout(() => {
+            diagLog('rp.hedge', `${c.platform}::${c.modelId} standby dropped — no content`);
+            dropStandby(s);
+          }, firstContentTimeoutMs());
+          void (async () => {
+            try {
+              for (;;) {
+                const { value, done } = await iterator.next();
+                if (done) break;
+                s.buffered.push(value);
+                if (isContent(value)) { s.hasContent = true; s.onWin?.(); break; }
+              }
+            } catch {
+              // It failed on its own (429/5xx/network): nothing is recorded and nothing is cooled
+              // down — the normal loop will dial it and judge it if the turn ever gets there.
+              if (standby === s) dropStandby(s); else { clearTimeout(s.deadline); s.onWin = undefined; }
+            }
+          })();
+          return s;
+        };
+        /** Hands a live standby over to the normal loop for its candidate; undefined when none. */
+        const takeStandby = (c: Candidate, apiKey: string): Standby | undefined => {
+          const s = standby;
+          if (!s || s.c !== c || s.apiKey !== apiKey) return undefined;
+          standby = undefined;
+          clearTimeout(s.deadline);
+          s.onWin = undefined;
+          diagLog('rp.hedge', `${c.platform}::${c.modelId} standby adopted — no second request`);
+          return s;
+        };
+        /** An adopted standby replays what it already received, then continues its live stream and
+         *  reports how that stream ended (readSseStream's return value). */
+        const replay = (s: Standby): AsyncGenerator<ChatCompletionChunk, any> => (async function* () {
+          for (const buffered of s.buffered) yield buffered;
+          for (;;) {
+            const { value, done } = await s.iterator.next();
+            if (done) return value;
+            yield value;
+          }
+        })();
         // Open-ended on purpose: when the sticky head fails, `extend` appends the picker chain
         // and the same loop keeps walking it.
         // Shared across candidates: a part already enqueued cannot be retracted, so a candidate
@@ -941,6 +1095,10 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
         const reasoningId = 'reasoning-0';
         let reasoningStarted = false;
         let networkRetried = false;
+        /** Set when a candidate dropped AFTER text had started: the next candidate that is actually
+         *  dialled writes into the same channel behind a visible seam. Deferred until that dial, so
+         *  a pinned model or an exhausted chain never announces a continuation that cannot happen. */
+        let seamPending = false;
         for (let i = 0; ; i++) {
           if (options.abortSignal?.aborted) { controller.error(options.abortSignal.reason ?? new Error('aborted')); return; }
           if (i >= candidates.length) {
@@ -964,7 +1122,8 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
           const c = candidates[i];
           const provider = resolveProvider(c.platform, c.modelId);
           if (!provider) continue;
-          if (Date.now() - startedAt > chainDeadlineMs()) {
+          // A live standby for this candidate is already answering — the deadline does not refuse it.
+          if (Date.now() - startedAt > chainDeadlineMs() && standby?.c !== c) {
             attempts.push(`${c.platform}::${c.modelId} not started (chain deadline reached)`);
             break;
           }
@@ -981,6 +1140,9 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
           // Every stored key gets a turn within the candidate before it is abandoned — a
           // dead or quota'd key must not cost the whole platform.
           for (const apiKey of c.apiKeys) {
+            // A candidate that lost a hedge race is done: skip its remaining keys so the loop lands
+            // on the standby that beat it instead of retrying the loser.
+            if (lostRace === c) break;
           try {
             // Everything the reasoning channel carried — feeds the nudge decision and the
             // last-resort fold below.
@@ -992,6 +1154,9 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             const acc = new Map<number, { id: string; name: string; args: string }>();
             let usage: { prompt_tokens?: number; completion_tokens?: number } | undefined;
             let finish: string | null = null;
+            /** How the provider's stream ended — 'done' (its [DONE] terminator arrived), 'eof' (the
+             *  connection just closed), undefined (an adapter that synthesises its own finish). */
+            let streamEnd: 'done' | 'eof' | undefined;
             // ONE mechanical continuation: a stream that ends with reasoning but no text
             // and no tool calls gets a "final answer now" nudge before anything is folded.
             let nudged = false;
@@ -1022,18 +1187,80 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
               const headersTimer = armStall(ttftGate, 'response');
               let contentTimer: ReturnType<typeof setTimeout> | undefined;
               let contentSeen = false;
+              // Mid-stream stall gate (see streamIdleTimeoutMs), under the same "gates apply" test.
+              const idleGate = ttftGate > 0 ? streamIdleTimeoutMs() : 0;
+              let idleTimer: ReturnType<typeof setTimeout> | undefined;
               // The SDK's own abort (Stop button / sub-agent timeout) must still kill the
               // request — combine both signals rather than replacing the caller's.
               const ttftSignal = options.abortSignal
                 ? AbortSignal.any([options.abortSignal, ttftController.signal])
                 : ttftController.signal;
               let loopCut = false;
+              /** This attempt itself received a finish_reason (unlike `finish`, which an earlier
+               *  nudge attempt of the same candidate may have set). */
+              let sawFinish = false;
+              streamEnd = undefined;
+
+              // Delayed hedge (opt-in): while THIS attempt is still silent, race the next candidate.
+              // One timer per attempt, disarmed the moment the head has content or the attempt ends.
+              const adopted = nudged ? undefined : takeStandby(c, apiKey);
+              if (adopted) {
+                // The standby's request predates this attempt's gates, so forward their aborts to it.
+                ttftSignal.addEventListener('abort', () => adopted.ctl.abort(ttftSignal.reason), { once: true });
+              }
+              let hedgeTimer: ReturnType<typeof setTimeout> | undefined;
+              let racing: Standby | undefined;
+              let headSettled = false;
+              const hedgeDisarm = (headWon: boolean): void => {
+                headSettled = true;
+                if (hedgeTimer) { clearTimeout(hedgeTimer); hedgeTimer = undefined; }
+                if (!racing) return;
+                const s = racing;
+                racing = undefined;
+                s.onWin = undefined;
+                // When the head answered, its rival is released whatever it has. When the head
+                // merely ENDED (its own gate, an error, silence), a rival that already has content
+                // is kept for the loop to adopt; one still silent is released.
+                if (headWon || !s.hasContent) dropStandby(s);
+              };
+              if (hedgeAfter > 0 && !nudged && !adopted) {
+                hedgeTimer = setTimeout(() => {
+                  void (async () => {
+                    const opened = !standby;
+                    const s = standby ?? await openStandby(i + 1);
+                    if (!s) return;
+                    if (headSettled) { if (opened) dropStandby(s); return; }
+                    racing = s;
+                    const lose = (): void => {
+                      racing = undefined; // the standby stays — the loop is about to adopt it
+                      s.onWin = undefined;
+                      lostRace = c;
+                      hedgeDisarm(false);
+                      ttftController.abort(new ProviderHttpError(
+                        `${provider.name} was still silent after ${hedgeAfter}ms — ${s.c.platform}::${s.c.modelId} answered first`, 408));
+                    };
+                    if (s.hasContent) { lose(); return; }
+                    s.onWin = lose;
+                  })();
+                }, hedgeAfter);
+              }
 
               // Time-to-first-chunk is NOT measured here any more (2026-09-05). It existed to
               // feed a learned slow-model demotion in the picker; that is gone, and the engine
               // already logs the same number for diagnostics (engine.ttft, off turn start).
-              try {
-                for await (const chunk of provider.streamChatCompletion(apiKey, attemptMessages, c.modelId, {
+              // A candidate that takes over after a mid-stream drop: what is already on screen
+              // stays, and this one writes into the SAME channel behind a visible seam rather than
+              // restarting a second copy of the answer. Posted here, at the dial, so a pinned model
+              // or an exhausted chain never announces a continuation that cannot happen.
+              if (seamPending && textStarted) {
+                controller.enqueue({ type: 'text-delta', id: textId, delta: TAKEOVER_SEAM });
+                seamPending = false;
+              }
+              // An adopted standby replays its buffered chunks and then continues the request it
+              // already has; otherwise this is a fresh request.
+              const stream = adopted
+                ? replay(adopted)
+                : provider.streamChatCompletion(apiKey, attemptMessages, c.modelId, {
                   temperature: options.temperature,
                   max_tokens: options.maxOutputTokens,
                   tools,
@@ -1043,7 +1270,16 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
                   abortSignal: ttftSignal,
                   timeoutMs: connectTimeoutFor(c.platform),
                   onResponseHeaders: (h: Headers) => noteQuotaHeaders(c.platform, c.modelId, h),
-                })) {
+                });
+              const iterator = stream[Symbol.asyncIterator]();
+              let drained = false;
+              try {
+                // Manual iteration rather than for-await so the generator's RETURN value — how the
+                // stream ended — is captured; `yield*` forwards it up from readSseStream.
+                while (true) {
+                const next = await iterator.next();
+                if (next.done) { streamEnd = next.value; drained = true; break; }
+                const chunk = next.value;
                   // First chunk: the stream is alive, so the headers gate is done and the
                   // content gate's clock starts HERE.
                   if (firstChunkAt === undefined) {
@@ -1051,18 +1287,24 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
                     diagLog('rp.ttft', `${c.platform}::${c.modelId} first chunk after ${firstChunkAt - candidateStart}ms`);
                   }
                   if (headersTimer) clearTimeout(headersTimer);
+                  // Mid-stream stall gate: once armed, EVERY chunk re-arms it — a heartbeat proves
+                  // the socket is alive even when it carries no progress.
+                  if (idleTimer) { clearTimeout(idleTimer); idleTimer = armStall(idleGate, 'data mid-stream'); }
                   if (contentGate > 0 && !contentSeen && !contentTimer) contentTimer = armStall(contentGate, 'content chunk');
                   if (chunk.usage) usage = chunk.usage;
                   const choice = chunk.choices?.[0];
                   if (!choice) continue;
-                  if (choice.finish_reason) finish = choice.finish_reason;
+                  if (choice.finish_reason) { finish = choice.finish_reason; sawFinish = true; }
                   const delta = choice.delta ?? {};
                   // Thinking arrives as native reasoning fields or `<think>` markup in content;
                   // the splitter routes both to the reasoning channel without doubling.
                   const split = splitter.feed(delta.content, reasoningFromDelta(delta as unknown as Record<string, unknown>));
                   if (split.text || split.reasoning || (delta.tool_calls?.length ?? 0) > 0 || choice.finish_reason) {
                     contentSeen = true;
+                    // The head answered: whichever standby was opened for it loses.
+                    hedgeDisarm(true);
                     if (contentTimer) { clearTimeout(contentTimer); contentTimer = undefined; }
+                    if (idleGate > 0 && !idleTimer) idleTimer = armStall(idleGate, 'data mid-stream');
                   }
                   if (split.reasoning) {
                     reasoningAccum += split.reasoning;
@@ -1095,7 +1337,12 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
                   }
                 }
               } catch (e) {
-                if (!loopCut) throw e;
+                // A connection that drops AFTER the provider's own finish_reason is a complete
+                // reply on a badly terminated body — keep it rather than failing over and
+                // re-buying the whole answer. Before that frame the same error is a cut reply.
+                if (sawFinish && isConnectionDrop(e)) {
+                  diagLog('rp.candidate', `${c.platform}::${c.modelId} connection dropped after its finish frame — keeping the reply`);
+                } else if (!loopCut) throw e;
               } finally {
                 // ALWAYS clear, including the throw-before-first-chunk path. A candidate
                 // that fails to connect (the common 429/5xx) skipped the old post-loop
@@ -1103,6 +1350,11 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
                 // later fired into an AbortController nobody was listening to any more.
                 if (headersTimer) clearTimeout(headersTimer);
                 if (contentTimer) clearTimeout(contentTimer);
+                if (idleTimer) clearTimeout(idleTimer);
+                if (hedgeTimer) clearTimeout(hedgeTimer);
+                hedgeDisarm(false);
+                // Close a stream we stopped reading (loop cut, gate abort) so its reader is released.
+                if (!drained) void iterator.return?.(undefined).catch(() => undefined);
               }
               if (loopCut) { looped = true; finish = 'stop'; }
 
@@ -1178,25 +1430,44 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
               controller.enqueue({ type: 'tool-call', toolCallId: tc.id, toolName: tc.name, input: tc.args });
               void idx;
             }
+            // ai >= 7.0.149 'interrupted': the connection closed before the stream's completion
+            // signal — no finish_reason AND no [DONE] terminator (readSseStream's return value,
+            // forwarded up by `yield*`). Such a reply is a prefix; the engine pauses it with
+            // Continue instead of shipping it as complete. A provider that ends on [DONE] without
+            // ever sending a finish_reason is NOT cut, so it is not flagged (streamEnd is 'done').
+            const cut = finish === null && streamEnd === 'eof' && hasOutput;
+            if (finish === null) {
+              diagLog('rp.noFinishReason', `${c.platform}::${c.modelId} stream ended without a finish_reason (ended by ${streamEnd ?? 'adapter'}) after ${Date.now() - candidateStart}ms — reported as ${cut ? "'interrupted'" : "'stop'"}`);
+            }
             controller.enqueue({
               type: 'finish',
-              finishReason: { unified: hasCalls ? 'tool-calls' : (isTruncationFinish(finish) ? 'length' : 'stop'), raw: hasCalls ? 'tool_calls' : (finish ?? 'stop') },
+              finishReason: {
+                unified: cut ? 'interrupted' : hasCalls ? 'tool-calls' : (isTruncationFinish(finish) ? 'length' : 'stop'),
+                raw: cut ? 'eof' : hasCalls ? 'tool_calls' : (finish ?? 'stop'),
+              },
               usage: toV4Usage(usage?.prompt_tokens, usage?.completion_tokens),
             });
             diagLog('rp.candidate', `${c.platform}::${c.modelId} served in ${Date.now() - candidateStart}ms${folded ? ' (folded)' : ''}`);
+            if (standby) dropStandby(standby);
             controller.close();
             return;
           } catch (e) {
+            // An abort is the user's Stop (or a parent's deadline), not a failure of the model.
+            // Live probe 2026-11-25: pressing Stop mid-reply put a healthy model into cooldown.
+            if (options.abortSignal?.aborted) { controller.error(options.abortSignal.reason ?? e); return; }
             lastError = e;
             candidateError = e;
             diagLog('rp.candidate', `${c.platform}::${c.modelId} failed after ${Date.now() - candidateStart}ms`);
             recordOutcome(c.platform, c.modelId, false);
             noteModelFailure(c.platform, c.modelId, e instanceof ProviderHttpError ? e.status : undefined, !!tools?.length, e instanceof Error ? e.message : undefined);
             noteCandidateRefusal(c, e, deadPlatforms, !!apiKey, refusals);
-            if (isFailoverWorthy(e)) {
-              // Text already on screen stays; the next candidate continues in the same channel
-              // behind a visible seam rather than restarting a second copy of the answer.
-              if (textStarted) controller.enqueue({ type: 'text-delta', id: textId, delta: '\n\n*(connection to the model dropped — continuing with another)*\n\n' });
+            // A pinned model runs alone (2026-08-31): its dropped connection is its own visible
+            // failure — no failover notice for a continuation that cannot happen.
+            if (isFailoverWorthy(e) && !(providerOpts.pinnedModel && isConnectionDrop(e))) {
+              // Text already on screen stays; the next candidate that is ACTUALLY dialled continues
+              // in the same channel behind a visible seam (seamPending, posted just before that
+              // dial) rather than restarting a second copy of the answer.
+              if (textStarted) seamPending = true;
               providerOpts.onFailover?.(`${c.platform}::${c.modelId}`, e instanceof Error ? e.message : String(e));
               // Same as doGenerate: a confirmed overflow makes the remaining too-small
               // candidates impossible — drop them rather than replay the error on each.
@@ -1221,7 +1492,9 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             attempts.push(`${c.platform}::${c.modelId} ${candidateError instanceof Error ? candidateError.message : String(candidateError)}`);
             if (isAccountLevel(candidateError)) deadPlatforms.add(c.platform);
           }
+          if (lostRace === c) lostRace = undefined;
         }
+        if (standby) dropStandby(standby);
         controller.error(chainExhaustedError(candidates, attempts, lastError, refusals));
       } catch (e) {
         try { controller.error(e); } catch { /* already closed or errored */ }

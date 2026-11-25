@@ -76,14 +76,50 @@ candidate gets 60 s to answer with headers (raised from 25 s after a live gatewa
 plus keepalives), and the whole chain stops STARTING new candidates after 120 s — a candidate
 already streaming is never interrupted, TierMux just declines to open another one.
 
-All three failover time bounds are settings since 2026-09-22, defaulting to the historical
-values: `tiermux.agent.connectTimeoutMs` (60 000, per-candidate time to headers),
-`tiermux.agent.firstContentTimeoutMs` (30 000, time to the first real content chunk once a
-stream started) and `tiermux.agent.chainDeadlineMs` (120 000, stop starting candidates).
-Custom/local endpoints are exempt from all three. With `tiermux.agent.diagTrace` on, the
+The failover time bounds are settings since 2026-09-22: `tiermux.agent.connectTimeoutMs`
+(60 000, per-candidate time to headers), `tiermux.agent.firstContentTimeoutMs` (30 000, time
+to the first real content chunk once a stream started) and `tiermux.agent.chainDeadlineMs`
+(60 000 since 2026-11-11, was 120 000; stop starting candidates). A fourth was added
+2026-11-24: `tiermux.agent.streamIdleTimeoutMs` (60 000, silence AFTER the first content
+chunk). The first three only cover the START of a stream, so a connection that went silent
+mid-answer hung until Node's own 5-minute body timeout and then failed the turn without
+failover. Now the stalled stream is abandoned, the staller goes into cooldown, and the next
+model continues behind the visible `*(connection to the model dropped — continuing with
+another)*` seam. It is counted from the most recent chunk, so a slow but flowing reply is
+never cut; 0 disables it.
+Custom/local endpoints are exempt from all four. With `tiermux.agent.diagTrace` on, the
 diag channel also logs per-candidate first-chunk times (`rp.ttft`), per-candidate settle
-times (`rp.candidate`) and per-step wall-clock (`engine.step`) — read-only observability;
-selection stays un-learned by design.
+times (`rp.candidate`) and per-step wall-clock with its model-vs-tool split (`engine.step`) —
+read-only observability; selection stays un-learned by design.
+
+**Delayed hedging is opt-in** (2026-11-24): `tiermux.agent.hedgeAfterMs`, default 0 = off.
+A slow START is the one wait serial failover cannot hide — the head is silent and the next
+candidate is not even dialled until a 30–60 s gate cuts it. With hedging on, a candidate that
+has produced nothing `hedgeAfterMs` after its request opened starts the NEXT candidate as a
+standby; whichever produces content first serves the step. The loser is aborted before it has
+shown anything (no seam, no duplicate), the standby's already-received chunks are adopted by the
+normal loop (it is never dialled twice), the silent head takes a cooldown and the swap is reported
+as a failover. It costs one extra request on exactly the steps where the head was that slow,
+which is why it is off by default (6 000–10 000 is the intended range); a pinned model never
+hedges. Test: `test:e2e:router-sticky` 34–40.
+
+**A cut stream is reported as cut.** ai ≥ 7.0.149 has the `interrupted` finish reason for a
+stream that ended without its completion signal. `readSseStream` returns whether the provider's
+`[DONE]` terminator arrived or the connection simply closed, so a reply that closed with neither a
+`finish_reason` nor a `[DONE]` is `interrupted` (the engine pauses it with Continue) while a
+provider that ends on `[DONE]` without a finish_reason is still a complete reply. Test:
+`test:e2e:router-sticky` 30–33.
+
+**A torn-down socket is a failover, and Stop is not a failure.** Both found by a live probe on
+2026-11-25 (a real local socket destroyed mid-reply), never by a stub. When a socket dies
+mid-reply, Node's fetch fails the body read with a bare `TypeError: terminated` and hides the
+reason in `cause` (`SocketError: other side closed`, `UND_ERR_SOCKET`); none of the network
+patterns matched it, so the turn did not fail over. `isConnectionDrop` now recognises that error
+and `isFailoverWorthy` accepts it. A drop after the provider's own finish_reason is a complete
+reply on a badly ended body and is kept. A pinned model runs alone, so its drop is its own failure
+with no seam and no failover notice; the seam is posted only when the next candidate is actually
+dialled. An abort (`options.abortSignal`) is the user's Stop and no longer records a failure
+against the model that was answering. Test: `test:e2e:router-sticky` 41–46.
 
 ### B. Utility calls — `routeOnce` (`src/agent/core/routeOnce.ts`)
 
