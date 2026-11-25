@@ -121,6 +121,19 @@ async function main() {
     ok('its prose answer ships', r.text.includes('Let me continue'), r.text.slice(0, 50));
   }
 
+  console.log('— a continuation pass that dies on the wire is a provider pause, not a finished turn —');
+  {
+    // Pass 1 runs a tool and comes back empty (report-gap => one nudge); the nudge pass dies before
+    // its first byte. consumeStream() resolves on stream errors, so before 2026-11-24 only a diag
+    // line noted it and pass 1's empty reply shipped as a finished turn.
+    const m = createMockModel([readCall, { text: '' }, { error: new Error('TierMux: all 6 model candidates failed') }], 'nudge-died');
+    const r = await turn(m);
+    ok('the nudge pass ran and died', m.calls.length === 3, `${m.calls.length} model calls`);
+    ok('the turn pauses and names the provider stop', r.paused === true && r.stopReason === 'provider', JSON.stringify({ paused: r.paused, stop: r.stopReason, finish: r.finishReason }));
+    ok('it is not reported as a hard failure', !r.failed && r.errorMessage === undefined, JSON.stringify({ failed: r.failed, errorMessage: r.errorMessage }));
+    ok('and no empty reply is shipped as an answer', r.text.trim() === '', JSON.stringify(r.text));
+  }
+
   fs.rmSync(root, { recursive: true, force: true });
   console.log(bad === 0 ? '\nLoop closing holds.' : `\n${bad} FAILED`);
   process.exit(bad === 0 ? 0 : 1);

@@ -7,6 +7,7 @@ import {
   streamText,
   stepCountIs,
   type ModelMessage,
+  type StepResult,
   type StopCondition,
   type ToolSet,
   type LanguageModel,
@@ -65,6 +66,8 @@ const STUCK_PLAN_WRAPUP = 'You keep re-reading the same files without converging
 const STUCK_AGENT_WRAPUP = 'You keep repeating the same tool call without making progress. Stop using tools and report to the user now from what you have already found: what you changed so far (paths), and what is still left to do with the exact path:line for each change. Say plainly what you could not confirm.';
 /** Shown when the user skipped an askUser card in agent/ask mode and the turn stopped there. */
 const DISMISSED_NOTE = '_Stopped — you skipped the question, so nothing more was done. Reply with how you want to proceed._';
+/** Tool-card copy for a call that streamed but never executed (see unexecutedCalls). */
+const NOT_RUN_DETAIL = 'Not run — the connection to the model dropped before this call executed.';
 
 /** UI-facing copy of a tool's result (ToolEvent.detail) — the tool card's "View output" body
  *  and the crash-recovery snapshot both read it. Capped separately from what the model sees:
@@ -325,6 +328,35 @@ function isFailureOutput(output: unknown): boolean {
   return typeof v === 'object' && v !== null && 'error' in (v as Record<string, unknown>);
 }
 
+/** Tool calls of a FINISHED step that got neither a result nor an error part, so nothing will ever
+ *  settle them. Repro (readLoop 3d, ai 7.0.181): a step whose stream ended without its completion
+ *  signal (`finishReason: 'interrupted'`) keeps the tool calls it had streamed, but the SDK does not
+ *  execute them. Structural — a missing outcome — never a judgment about the call. */
+function unexecutedCalls(step: StepResult<ToolSet>): Array<{ toolCallId: string; toolName: string; input: unknown }> {
+  const settled = new Set<string>();
+  for (const p of step.content as Array<{ type?: string; toolCallId?: string }>) {
+    if (p.type === 'tool-error' && p.toolCallId) settled.add(p.toolCallId);
+  }
+  for (const tr of step.toolResults ?? []) settled.add(tr.toolCallId);
+  return (step.toolCalls ?? []).filter((tc) => !settled.has(tc.toolCallId));
+}
+
+/** A step's response messages for the transcript, minus its unexecuted calls. A call with no result
+ *  must not reach the next model call — providers reject an assistant tool call that nothing
+ *  answers — and must not count as work (changedFilesFrom reads tool calls). An assistant message
+ *  left with no parts goes too. */
+function stepMessages(step: StepResult<ToolSet>): ModelMessage[] {
+  const dropped = new Set(unexecutedCalls(step).map((tc) => tc.toolCallId));
+  if (dropped.size === 0) return [...step.response.messages];
+  const out: ModelMessage[] = [];
+  for (const m of step.response.messages) {
+    if (m.role !== 'assistant' || !Array.isArray(m.content)) { out.push(m); continue; }
+    const content = m.content.filter((p) => !(p.type === 'tool-call' && dropped.has(p.toolCallId)));
+    if (content.length > 0) out.push({ ...m, content });
+  }
+  return out;
+}
+
 export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentResult> {
   // Turn-start facts: if signalAborted=true here, no model request can ever run this turn.
   diagLog('engine.start', `mode=${opts.mode} msgs=${opts.messages?.length ?? 0} signalAborted=${opts.abortSignal?.aborted ?? 'none'} requestId=${opts.requestId ?? '-'}`);
@@ -453,6 +485,11 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   // ai v7 consumeStream() RESOLVES on stream errors (they go to its onError option) — the
   // try/catch below never sees provider failures; captured here for the post-pass guard.
   let streamError: string | undefined;
+  /** The provider's completion signal never arrived — ai >= 7.0.149 `finishReason: 'interrupted'`
+   *  (the stream closed cleanly before its finish frame; readSseStream does not throw on EOF). What
+   *  streamed is a prefix, so the turn takes the same resumable provider pause as a mid-turn failure:
+   *  nothing is continued, verified or folded onto it. Test: readLoop 3d. */
+  let interrupted = false;
   /** A continuation pass that dies on the wire never reaches onEnd: its finished steps — edits
    *  included — join the transcript here instead of vanishing (the pass-1 path does the same
    *  after its catch). After a clean pass onEnd already emptied unsettledWork, so this is a no-op. */
@@ -461,9 +498,13 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     unsettledWork = [];
   };
   /** consumeStream() RESOLVES on stream errors, so a continuation pass that dies on the wire
-   *  is invisible unless this option catches it. */
-  const passError = (tag: string) => (error: unknown) =>
-    diagLog(`engine.${tag}StreamError`, (error instanceof Error ? error.message : String(error)).slice(0, 160));
+   *  is invisible unless this option catches it. It also marks the turn provider-cut (2026-11-24):
+   *  a nudge pass that dies used to leave pass 1's EMPTY reply shipping as a finished turn — the
+   *  same silent-empty shape the pass-1 stream-error guard below exists for. Test: close-loop. */
+  const passError = (tag: string) => (error: unknown) => {
+    streamError = error instanceof Error ? error.message : String(error);
+    diagLog(`engine.${tag}StreamError`, streamError.slice(0, 160));
+  };
   // True while the current step has streamed reply text but no tool call yet (see onChunk).
   let narrationSinceToolCall = false;
   /** Finished steps of the running pass. onEnd never fires when the stream errors, so without this
@@ -538,7 +579,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
     );
     return streamText({
       model,
-      system,
+      instructions: system, // `system` is deprecated in ai v7 — same prompt position, new name
       messages,
       tools,
       temperature: TOOL_CALL_TEMPERATURE,
@@ -612,6 +653,11 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       stopWhen: [stepCountIs(maxSteps), planAccepted, notMakingProgress, userDismissed],
       abortSignal: opts.abortSignal,
       maxRetries: 1,
+      // SDK warnings (a deprecated option, a setting the provider ignored) go to the diag trace
+      // instead of the SDK's global logger, which the extension host never surfaces.
+      onWarning: ({ warnings, provider, model }) => {
+        for (const w of warnings) diagLog('engine.sdkWarning', `${provider ?? '?'}/${model ?? '?'} ${JSON.stringify(w)}`.slice(0, 240));
+      },
 
       onChunk: ({ chunk }) => {
         // First streamed delta of the pass — the TTFT number (diagTrace). Logged once per pass.
@@ -634,13 +680,17 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       },
 
       onStepEnd: (step) => {
-        unsettledWork.push(...step.response.messages);
+        unsettledWork.push(...stepMessages(step));
         // Per-step wall-clock (diagTrace): the split that localizes a slow turn — this one
         // number per step, plus rp.ttft's per-candidate first-chunk times in routerProvider.
         const started = stepStartAt.get(step.stepNumber);
         if (started !== undefined) {
+          // Model-vs-tool split (ai v7 StepResult.performance) — the number that says whether a slow
+          // step was the provider's or ours. Read-only observability; nothing routes on it.
+          const toolMs = Object.values(step.performance.toolExecutionMs).reduce((a, b) => a + b, 0);
           diagLog('engine.step', `step ${step.stepNumber} took ${Date.now() - started}ms`
-            + ` (${(step.toolCalls?.length ?? 0)} tool call${(step.toolCalls?.length ?? 0) === 1 ? '' : 's'}, ${Date.now() - turnT0}ms into the turn)`);
+            + ` (model ${Math.round(step.performance.responseTimeMs)}ms, tools ${Math.round(toolMs)}ms; `
+            + `${(step.toolCalls?.length ?? 0)} tool call${(step.toolCalls?.length ?? 0) === 1 ? '' : 's'}, ${Date.now() - turnT0}ms into the turn)`);
         }
         for (const tc of step.toolCalls ?? []) {
           const ev: ToolEvent = { toolCallId: tc.toolCallId, name: tc.toolName, args: tc.input, state: 'running' };
@@ -695,6 +745,14 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
             diagLog('engine.stuck', `${tr.toolName} failed ${n}× with identical input — stopping the turn (resumable)`);
           }
         }
+        // Calls that streamed but never executed (a step cut before its completion signal) get their
+        // terminal event here — see unexecutedCalls. Without it the 'running' event posted above
+        // never gets a match and the step card spins forever.
+        for (const tc of unexecutedCalls(step)) {
+          const ev: ToolEvent = { toolCallId: tc.toolCallId, name: tc.toolName, args: tc.input, state: 'error', detail: NOT_RUN_DETAIL };
+          toolEvents.push(ev);
+          opts.onTool(ev);
+        }
       },
 
       onError: ({ error }) => {
@@ -716,6 +774,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
         const fr = typeof finishReason === 'string'
           ? finishReason
           : ((finishReason as { unified?: string } | undefined)?.unified ?? 'unknown');
+        if (fr === 'interrupted') interrupted = true;
         // Last NON-empty step text, not steps.at(-1): a reasoning model can emit text + a tool
         // call, then a silent step (gpt-oss-120b: 270 out tokens discarded at settle).
         // Cap hit WHILE still calling tools ⇒ cut, not finished. A final answer landing exactly
@@ -724,11 +783,17 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
           hitStepCap = true;
           diagLog('engine.stepCap', `stopped at the ${maxSteps}-step cap with tool calls still in flight — turn is resumable`);
         }
-        const passText = [...steps].reverse().find((s) => s.text?.trim())?.text ?? '';
+        // A cut pass contributes only what its OWN last step streamed: an earlier step's planning
+        // narration is not the reply to a turn that never finished, and when the cut step was
+        // calling tools its text is narration by onChunk's rule, so nothing ships (readLoop 3d).
+        const lastStep = steps.at(-1);
+        const passText = fr === 'interrupted'
+          ? ((lastStep?.toolCalls?.length ?? 0) > 0 ? '' : (lastStep?.text ?? ''))
+          : [...steps].reverse().find((s) => s.text?.trim())?.text ?? '';
         outcome = {
           finishReason: fr,
           text: passText || outcome.text,
-          responseMessages: [...outcome.responseMessages, ...steps.flatMap((s) => s.response.messages)],
+          responseMessages: [...outcome.responseMessages, ...steps.flatMap((s) => stepMessages(s))],
         };
       },
     });
@@ -958,8 +1023,9 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   // narration in the thinking channel). A little duplication beats an empty bubble.
   // Not after a provider failure: agentBench 2026-11-04 shipped half a thought ("We need to
   // investigate…") as the answer, with no error and no Continue, once every model had failed.
-  const providerCut = !!streamError && !opts.abortSignal?.aborted;
-  if (!outcome.text.trim() && reasoningText.trim() && !providerCut) {
+  // Read fresh each time: a verify-fix or audit pass can be cut after the first pass was not.
+  const providerCut = (): boolean => (!!streamError || interrupted) && !opts.abortSignal?.aborted;
+  if (!outcome.text.trim() && reasoningText.trim() && !providerCut()) {
     diagLog('engine.reasoningFold', `empty reply after all passes — promoting ${reasoningText.length} chars of reasoning as the reply`);
     outcome.text = reasoningText.trim();
   }
@@ -973,7 +1039,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   let verifyAvailable = false;
   let fixRounds = 0;
   const mutated = changedFilesFrom(toChatMessages(outcome.responseMessages));
-  if (opts.mode === 'agent' && mutated.length > 0 && !opts.abortSignal?.aborted && !stuckSignature && !askDismissed && !providerCut) {
+  if (opts.mode === 'agent' && mutated.length > 0 && !opts.abortSignal?.aborted && !stuckSignature && !askDismissed && !providerCut()) {
     verifyCmd = resolveVerifyCommand(mutated);
     verifyAvailable = !!verifyCmd;
     if (!verifyCmd) {
@@ -1027,7 +1093,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   let auditOutcome: AgentResult['auditOutcome'];
   const completedTodos = (lastTodos ?? []).filter((t) => t.status === 'completed');
   if ((opts.auditTodos ?? DEFAULT_AUDIT_TODOS) && opts.mode === 'agent' && completedTodos.length > 0 && (lastTodos?.length ?? 0) >= 3
-    && !opts.abortSignal?.aborted && !stuckSignature && !askDismissed && !providerCut) {
+    && !opts.abortSignal?.aborted && !stuckSignature && !askDismissed && !providerCut()) {
     try {
       const list = completedTodos.map((t, i) => `${i + 1}. ${t.content}`).join('\n');
       const audit = await runSubagent({
@@ -1064,7 +1130,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   const workMessages = toChatMessages(outcome.responseMessages);
   // A turn cut by the step cap or by no-progress is NOT finished: `paused` shows the Continue
   // button and stopReason names the stop. `stuck` outranks `budget` (the more specific fact).
-  const stopReason = stuckSignature ? 'stuck' as const : hitStepCap ? 'budget' as const : providerCut ? 'provider' as const : undefined;
+  const stopReason = stuckSignature ? 'stuck' as const : hitStepCap ? 'budget' as const : providerCut() ? 'provider' as const : undefined;
 
   // ── WORK REPORT — emitted only for turns that CHANGED something; a card saying "0 files,
   // unverified" is worse than no card.

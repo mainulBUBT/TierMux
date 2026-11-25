@@ -102,7 +102,7 @@ export async function runSubagent(opts: SubagentOpts): Promise<SubagentResult> {
   try {
     const result = streamText({
       model,
-      system: `${def.prompt}\n\n${METHOD}`,
+      instructions: `${def.prompt}\n\n${METHOD}`,
       messages: [{ role: 'user', content: promptContent }],
       tools,
       temperature: 0.2,

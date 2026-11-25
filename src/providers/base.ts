@@ -107,8 +107,11 @@ export abstract class BaseProvider {
     return `chatcmpl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   }
 
-  /** Shared SSE reader for OpenAI-wire streaming endpoints. */
-  protected async *readSseStream(res: Response): AsyncGenerator<ChatCompletionChunk> {
+  /** Shared SSE reader for OpenAI-wire streaming endpoints. Returns how the stream ended — 'done'
+   *  when the provider's `[DONE]` terminator arrived, 'eof' when the connection just closed — so
+   *  the caller can tell a complete reply from a cut one when no finish_reason was ever sent.
+   *  Reaches routerProvider through each adapter's `yield*`, which forwards the return value. */
+  protected async *readSseStream(res: Response): AsyncGenerator<ChatCompletionChunk, 'done' | 'eof'> {
     const reader = res.body?.getReader();
     if (!reader) throw new Error('No response body');
     const decoder = new TextDecoder();
@@ -142,7 +145,7 @@ export abstract class BaseProvider {
           }
           if (!trimmed || trimmed.startsWith(':') || !trimmed.startsWith('data:')) continue;
           const data = trimmed.slice(trimmed.indexOf(':') + 1).trim();
-          if (data === '[DONE]') return;
+          if (data === '[DONE]') return 'done';
           let frameError: { message: string; status: number } | null = null;
           try {
             const chunk = JSON.parse(data) as ChatCompletionChunk;
@@ -201,6 +204,9 @@ export abstract class BaseProvider {
           diagLog('sse.fallbackfail', `content-type=${ctype} bodyHead=${JSON.stringify(bodyText.slice(0, 200))} err=${(e as Error).message}`);
         }
       }
+      // No [DONE] terminator: the connection simply closed. With a finish_reason already seen that
+      // is harmless; without one the reply was cut (routerProvider reports 'interrupted').
+      return 'eof';
     } finally {
       diagLog('sse.summary', `content-type=${ctype} parsedChunks=${chunkCount} (0 chunks ⇒ instant-empty bug)`);
       reader.cancel().catch(() => { /* upstream already gone */ });

@@ -179,6 +179,34 @@ narration SHIPS as the answer. The harness does not decide "this model should ha
 therefore retry." If users report a recurring failure shape, gather a live repro first, then
 add ONE targeted guard citing it. The tower is gone; keep it gone.
 
+## 2026-11-24 changes (AI SDK 7.0.107 → 7.0.181; all mechanical)
+
+- **`ai` bumped to 7.0.181** (`@ai-sdk/provider` 4.0.39, `provider-utils` 5.0.83 — now also a direct
+  dependency, because `ToolResultOutput` was imported from it while it was only transitive). Free
+  wins, no code: the SDK no longer validates the whole transcript against the message schema on
+  every step (7.0.155), and a cancelled generation stops pending tool-call repairs (7.0.108).
+- **`instructions` replaces the deprecated `system` option** at the three call sites (engine.ts,
+  subagent.ts, planStructurer.ts). Same prompt position; only the name changed.
+- **A stream that ended without its completion signal is a provider pause.** ai ≥ 7.0.149 reports
+  `finishReason: 'interrupted'` when a provider stream closes before its finish frame. It is handled
+  like a mid-turn failure: `stopReason: 'provider'`, Continue shown, and no continuation, verify,
+  audit or reasoning fold on top of a prefix. Two things that case alone produces, both structural:
+  - The cut step's tool calls streamed but never executed. Each now gets a terminal `error` tool
+    event (otherwise its `running` event spins forever — the 2026-09-19 tool-error shape) and is
+    dropped from the transcript (an assistant tool call with no result is rejected by providers on
+    Continue, and must not count as work).
+  - The cut pass contributes only its own last step's text; an earlier step's planning narration is
+    not the reply to a turn that never finished.
+
+  Test: `test:e2e:read-loop` 3d. `routerProvider` reports it when a stream closes with NEITHER a
+  `finish_reason` NOR a `[DONE]` terminator (`readSseStream` returns which of the two ended the
+  stream; a provider that ends on `[DONE]` without a finish_reason is complete, not cut). A cut
+  tool step reports `interrupted` rather than `tool-calls`, so its calls are never executed.
+  Test: `test:e2e:router-sticky` 30–33.
+- **Not done, on purpose:** forwarding `toolChoice` to the wire (`tool_choice`). Every request error
+  runs `recordOutcome(false)` + `noteModelFailure`, so a provider that rejects
+  `tool_choice: 'required'` would be cooled down for our own unsupported parameter.
+
 ## 2026-11-12 changes (mechanical; source study of five open-source agents)
 
 - **Step cap restored as a runaway backstop: default 200** (`DEFAULT_MAX_STEPS`). The 2026-11-11

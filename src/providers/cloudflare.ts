@@ -63,7 +63,7 @@ export class CloudflareProvider extends BaseProvider {
       const err = await res.json().catch(() => ({}));
       throw providerHttpError(res, `Cloudflare API error ${res.status}: ${cfErr(err) ?? res.statusText}`);
     }
-    yield* this.readSseStream(res);
+    return yield* this.readSseStream(res); // forwards how the stream ended (see base.ts)
   }
 }
 

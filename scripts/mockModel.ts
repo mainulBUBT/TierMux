@@ -28,8 +28,10 @@ export interface MockResponse {
   /** Emit `text` (if any), then stall until the abort signal fires. */
   hang?: boolean;
   /** Override the text-only finish reason (default 'stop'). 'length' scripts an output-budget
-   *  cut mid-generation — drives the engine's length-continuation guard (engine.ts). */
-  finish?: 'stop' | 'length';
+   *  cut mid-generation — drives the engine's length-continuation guard (engine.ts).
+   *  'interrupted' scripts a stream that ended WITHOUT a completion signal (ai >= 7.0.149): the
+   *  text or tool calls arrive, then the connection closes before the finish frame. */
+  finish?: 'stop' | 'length' | 'interrupted';
 }
 
 function toV4Usage(inTok = 10, outTok = 5): LanguageModelV4Usage {
@@ -112,7 +114,7 @@ export function createMockModel(script: MockResponse[], label = 'mock'): Scripte
       let controller!: ReadableStreamDefaultController<LanguageModelV4StreamPart>;
       const stream = new ReadableStream<LanguageModelV4StreamPart>({ start(c) { controller = c; } });
 
-      const finish = (unified: 'stop' | 'tool-calls' | 'error' | 'length' = 'stop') => {
+      const finish = (unified: 'stop' | 'tool-calls' | 'error' | 'length' | 'interrupted' = 'stop') => {
         controller.enqueue({
           type: 'finish',
           finishReason: { unified, raw: unified },
@@ -152,7 +154,8 @@ export function createMockModel(script: MockResponse[], label = 'mock'): Scripte
         // Text (if any) closes before the tool calls; tool calls end the response.
         if (step.text) for (const p of textParts(textId, step.text)) controller.enqueue(p);
         for (const p of toolCallParts(tcs)) controller.enqueue(p);
-        finish('tool-calls');
+        // An interrupted tool step: the calls streamed, the completion signal never did.
+        finish(step.finish === 'interrupted' ? 'interrupted' : 'tool-calls');
         return { stream };
       }
 
@@ -170,7 +173,7 @@ export function createMockModel(script: MockResponse[], label = 'mock'): Scripte
       }
 
       if (step.text) for (const p of textParts(textId, step.text)) controller.enqueue(p);
-      finish(step.finish === 'length' ? 'length' : 'stop');
+      finish(step.finish === 'length' ? 'length' : step.finish === 'interrupted' ? 'interrupted' : 'stop');
       return { stream };
     },
   };
