@@ -34,6 +34,7 @@ import { diagLog } from './util/diag';
 import { SessionStore } from './sessionStore';
 import { getPlatformInfo } from './providers';
 import { parseSlash, resolveMentions, searchMentions } from './context/mentions';
+import { shouldSteer } from './session/steer';
 import { activeEditorRelPath, buildActiveEditorContext, buildDiagnosticsContext } from './context/activeContext';
 import { contentToString } from './agent/content';
 import { ATTACHMENT_FILE_FILTERS, IMAGE_BYTE_LIMIT, buildAttachmentFromUri, isSupportedAttachmentPath, kindForPath as kindFromName, lastPdfFailureReason, mimeForPath as mimeForName } from './util/extractAttachments';
@@ -264,6 +265,9 @@ interface Session {
   /** Messages sent while a turn was running: they wait for it instead of cancelling it, and run
    *  in order once it settles (drainQueued). Stop drops them. */
   queuedSends?: Array<Extract<InMessage, { type: 'sendMessage' }>>;
+  /** The running turn's steering handle (AgentOpts.onSteerReady). Resolves false once no model loop
+   *  is there to take a message, so a stale handle is harmless. See the sendMessage handler. */
+  steer?: (text: string) => Promise<boolean>;
   /** Failed title picks so far this run — see titleDecision. */
   titleAttempts?: number;
   /** Set when the user manually renamed this session — suppresses auto-title overrides
@@ -1167,6 +1171,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       case 'sendMessage': {
         const target = this.current();
+        // Steering (2026-11-24): a plain message that arrives while the turn is still running joins
+        // the model's input at its NEXT step boundary, instead of waiting for the whole turn (an
+        // agent turn can run for minutes). A slash command, an attachment or a mode change is a
+        // new request and queues as before (session/steer.ts decides). So does anything the loop
+        // cannot take — the handle resolves false once no model loop is running.
+        if (target.activeRequestId && shouldSteer({
+          canSteer: !!target.steer, text: m.text, attachments: m.attachments?.length ?? 0,
+          runningMode: target.lastMode, sentMode: m.mode,
+        }) && await target.steer!(m.text)) {
+          this.post({ type: 'userEcho', sessionId: target.id, requestId: m.requestId, text: m.text });
+          break;
+        }
         if (target.activeRequestId || target.queuedSends?.length) {
           (target.queuedSends ??= []).push(m);
           this.post({ type: 'queuedMessage', sessionId: target.id, requestId: m.requestId, state: 'queued' });
@@ -3175,6 +3191,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.post({ type: 'toolStatus', sessionId: s.id, requestId, toolCallId: reasoningId(), name: 'reasoning', args: undefined, state: 'running', detail: reasoningText });
       },
       onStep: (phase, label) => { if (!live()) return; s.lastStepLabel = label; this.post({ type: 'agentStep', sessionId: s.id, requestId, phase: phase as 'thinking' | 'synthesizing' | 'done', label }); },
+      onSteerReady: (steer) => { s.steer = live() ? steer : undefined; },
       onTodos: (todos) => {
         if (!live()) return;
         s.lastTodos = todos;

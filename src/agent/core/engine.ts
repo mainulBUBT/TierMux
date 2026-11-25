@@ -6,6 +6,7 @@
 import {
   streamText,
   stepCountIs,
+  experimental_createSteering,
   type ModelMessage,
   type StepResult,
   type StopCondition,
@@ -563,8 +564,31 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   const system = composeSystemPrompt(opts.mode, await gatherPromptContext(symbolBudget), opts.todos,
     opts.mode === 'agent' ? getMcpManager()?.instructions() : undefined)
     + (sessionFilesBlock ? `\n\n${sessionFilesBlock}` : '');
+  // ── Steering (ai v7): a message the user sends while the turn is running joins the model's input
+  // at the next step boundary instead of waiting for the whole turn (200 steps can be minutes).
+  // One steering object per pass; between passes and after the turn `steer` resolves false, and
+  // the host queues the message exactly as before. Text only — the host never steers a message
+  // that carries attachments or a mode change. Test: close-loop.
+  let steering: ReturnType<typeof experimental_createSteering> | undefined;
+  let steerAnnounced = false;
+  /** Steered messages keyed by the step whose model call received them, so each lands in the
+   *  transcript right before the reply it shaped. StepResult.experimental_steeringMessages is
+   *  NOT usable for that: the SDK lists a delivered message on every step, earlier ones included,
+   *  which put it in front of step 1 (close-loop). Cleared at each pass start — a pass that ended
+   *  has already folded its own. */
+  const steeredForStep = new Map<number, ModelMessage[]>();
+  const steeredBefore = (step: StepResult<ToolSet>): ModelMessage[] => steeredForStep.get(step.stepNumber) ?? [];
+  const steer = async (text: string): Promise<boolean> => {
+    const s = steering;
+    if (!s) return false;
+    const outcome = await s.steer(text);
+    if (outcome.type !== 'delivered') return false;
+    steeredForStep.set(outcome.stepNumber, [...(steeredForStep.get(outcome.stepNumber) ?? []), outcome.message]);
+    return true;
+  };
   const runPass = (messages: ModelMessage[]) => {
     turnPass++;
+    steeredForStep.clear();
     // Per-PASS state, reset here so onChunk can close over it. Leaking it across passes fired
     // a second onRetractDraft for an already-retracted draft (exitPlanMode.e2e plan-gap case).
     narrationSinceToolCall = false;
@@ -577,7 +601,9 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       toolEvents.length ? 'synthesizing' : 'thinking',
       turnPass > 1 ? `Continuing (pass ${turnPass})…` : toolEvents.length ? 'Writing the reply…' : 'Thinking…',
     );
-    return streamText({
+    const passSteering = experimental_createSteering();
+    steering = passSteering;
+    const result = streamText({
       model,
       instructions: system, // `system` is deprecated in ai v7 — same prompt position, new name
       messages,
@@ -653,6 +679,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       stopWhen: [stepCountIs(maxSteps), planAccepted, notMakingProgress, userDismissed],
       abortSignal: opts.abortSignal,
       maxRetries: 1,
+      experimental_steering: passSteering,
       // SDK warnings (a deprecated option, a setting the provider ignored) go to the diag trace
       // instead of the SDK's global logger, which the extension host never surfaces.
       onWarning: ({ warnings, provider, model }) => {
@@ -680,7 +707,7 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       },
 
       onStepEnd: (step) => {
-        unsettledWork.push(...stepMessages(step));
+        unsettledWork.push(...steeredBefore(step), ...stepMessages(step));
         // Per-step wall-clock (diagTrace): the split that localizes a slow turn — this one
         // number per step, plus rp.ttft's per-candidate first-chunk times in routerProvider.
         const started = stepStartAt.get(step.stepNumber);
@@ -793,10 +820,16 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
         outcome = {
           finishReason: fr,
           text: passText || outcome.text,
-          responseMessages: [...outcome.responseMessages, ...steps.flatMap((s) => stepMessages(s))],
+          responseMessages: [...outcome.responseMessages, ...steps.flatMap((s) => [...steeredBefore(s), ...stepMessages(s)])],
         };
       },
     });
+    // Announced only once the loop exists — a steer sent before that has nothing to take it.
+    if (!steerAnnounced) {
+      steerAnnounced = true;
+      opts.onSteerReady?.(steer);
+    }
+    return result;
   };
 
   /** A post-answer fix pass (verify/audit) replaces outcome.text in onEnd — keep the turn's own

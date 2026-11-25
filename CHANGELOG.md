@@ -37,6 +37,13 @@ All notable changes to TierMux are documented here. The format is loosely
   text, and the answer that was already arriving is reused rather than requested again. It costs
   one extra request, and only on the steps where the first model was that slow, which is why it is
   off by default (6000–10000 ms is the intended range). A pinned model never hedges.
+
+### Added — steering (2026-11-24)
+
+- **Send a message while the agent is still working.** A plain message typed during a running turn
+  now joins the model's input at its next step, so you can correct course without waiting for the
+  whole turn or pressing Stop. Slash commands, attachments and mode changes still wait for a turn
+  of their own, and anything the running turn cannot take is queued exactly as before.
 - **A follow-up pass that dies on the wire is now a resumable pause.** When a continuation,
   verify-fix or audit pass failed on the network, only a diag line noted it and the turn shipped as
   finished. For a nudge pass that meant an empty reply with no Continue button. The turn now reports

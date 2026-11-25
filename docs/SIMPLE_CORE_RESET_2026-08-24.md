@@ -203,6 +203,14 @@ add ONE targeted guard citing it. The tower is gone; keep it gone.
   stream; a provider that ends on `[DONE]` without a finish_reason is complete, not cut). A cut
   tool step reports `interrupted` rather than `tool-calls`, so its calls are never executed.
   Test: `test:e2e:router-sticky` 30–33.
+- **A message sent mid-turn can join the running turn (ai v7 steering).** The engine hands the host
+  `AgentOpts.onSteerReady(steer)`; `steer(text)` adds the text to the model's input at the NEXT step
+  boundary, so the user corrects course without waiting for a whole turn (minutes on a 200-step run)
+  or pressing Stop. The host steers only a plain message in the running turn's mode — a slash
+  command, an attachment or a mode change queues for its own turn as before (`session/steer.ts`).
+  The steered message is kept in the transcript exactly once, before the reply it shaped. It is
+  input, never a judgment: the loop does not read it. Tests: close-loop (engine), `test:e2e:steer`
+  (which messages steer).
 - **Not done, on purpose:** forwarding `toolChoice` to the wire (`tool_choice`). Every request error
   runs `recordOutcome(false)` + `noteModelFailure`, so a provider that rejects
   `tool_choice: 'required'` would be cooled down for our own unsupported parameter.

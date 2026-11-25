@@ -134,6 +134,42 @@ async function main() {
     ok('and no empty reply is shipped as an answer', r.text.trim() === '', JSON.stringify(r.text));
   }
 
+  console.log('— a message the user sends MID-turn reaches the model at the next step boundary (steering) —');
+  {
+    type Steer = (text: string) => Promise<boolean>;
+    const indexOfUser = (w: NonNullable<AgentResult['workMessages']>): number => w.findIndex((x) => x.role === 'user');
+
+    // (a) The real shape: step 1 read a file and the user adds "also read b.txt" while that is being
+    // reported. It must not wait for the whole turn (200 steps can be minutes) — it joins the input
+    // of step 2, and the transcript keeps it in order, right before the reply it shaped.
+    let handle: Steer | undefined;
+    let steered: Promise<boolean> | undefined;
+    const m = createMockModel([readCall, { text: 'done, with b as well' }], 'steer');
+    const r = await turn(m, {
+      onSteerReady: (s) => { handle = s; },
+      onTool: () => { if (handle && !steered) steered = handle('also read b.txt'); },
+    });
+    ok('the engine hands the host a way to steer', !!handle, String(handle));
+    ok('the running loop accepted the message', (await steered) === true, String(await steered));
+    ok('the model saw it at the very next step — not in the step already under way',
+      m.calls.length === 2 && JSON.stringify(m.calls[1].messages).includes('also read b.txt') && !JSON.stringify(m.calls[0].messages).includes('also read b.txt'), `${m.calls.length} model calls`);
+    const w = r.workMessages ?? [];
+    const at = indexOfUser(w);
+    ok('it is kept in the transcript once, right before that step\'s reply',
+      at === w.length - 2 && w.filter((x) => x.role === 'user').length === 1 && String(w[at]?.content).includes('also read b.txt'), JSON.stringify(w));
+    ok('the turn itself ends normally', r.finishReason === 'stop' && r.text.includes('done, with b as well') && !r.paused, JSON.stringify({ finish: r.finishReason, text: r.text, paused: r.paused }));
+
+    // (b) A steer that lands before the first model call even starts is input to that first step,
+    // so it belongs in front of it — and still exactly once.
+    const m2 = createMockModel([readCall, { text: 'early note seen' }], 'steer-early');
+    let early: Promise<boolean> | undefined;
+    const r2 = await turn(m2, { onSteerReady: (s) => { early = s('note: keep it short'); } });
+    const w2 = r2.workMessages ?? [];
+    ok('a steer sent before the first step is that step\'s input',
+      (await early) === true && JSON.stringify(m2.calls[0].messages).includes('keep it short')
+      && indexOfUser(w2) === 0 && w2.filter((x) => x.role === 'user').length === 1, JSON.stringify(w2));
+  }
+
   fs.rmSync(root, { recursive: true, force: true });
   console.log(bad === 0 ? '\nLoop closing holds.' : `\n${bad} FAILED`);
   process.exit(bad === 0 ? 0 : 1);
