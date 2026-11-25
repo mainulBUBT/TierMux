@@ -335,11 +335,36 @@ function isFailureOutput(output: unknown): boolean {
  *  execute them. Structural — a missing outcome — never a judgment about the call. */
 function unexecutedCalls(step: StepResult<ToolSet>): Array<{ toolCallId: string; toolName: string; input: unknown }> {
   const settled = new Set<string>();
-  for (const p of step.content as Array<{ type?: string; toolCallId?: string }>) {
-    if (p.type === 'tool-error' && p.toolCallId) settled.add(p.toolCallId);
+  for (const p of step.content as Array<Record<string, unknown>>) {
+    if (p.type === 'tool-error' && typeof p.toolCallId === 'string') settled.add(p.toolCallId);
+    // An approval-policy DENIAL settles its call too. There is no 'tool-output-denied' content
+    // part: the verdict rides on a 'tool-approval-response' part with `approved: false` and the id
+    // nested in `toolCall` (raw dump 2026-11-25). Without this the denial was misreported as a
+    // dropped connection and its result orphaned in the transcript.
+    if (p.type === 'tool-approval-response' && p.approved === false) {
+      const id = (p.toolCall as { toolCallId?: unknown } | undefined)?.toolCallId;
+      if (typeof id === 'string') settled.add(id);
+    }
   }
   for (const tr of step.toolResults ?? []) settled.add(tr.toolCallId);
   return (step.toolCalls ?? []).filter((tc) => !settled.has(tc.toolCallId));
+}
+
+/** Calls the approval policy DENIED this step, with the policy's reason when it gave one. */
+function deniedCalls(step: StepResult<ToolSet>): Array<{ toolCallId: string; toolName: string; input: unknown; reason?: string }> {
+  return (step.content as Array<Record<string, unknown>>)
+    .filter((p) => p.type === 'tool-approval-response' && p.approved === false)
+    .map((p) => {
+      const tc = p.toolCall as { toolCallId?: unknown; toolName?: unknown; input?: unknown } | undefined;
+      const reason = typeof p.reason === 'string' && p.reason.trim() ? p.reason.trim() : undefined;
+      return {
+        toolCallId: typeof tc?.toolCallId === 'string' ? tc.toolCallId : '',
+        toolName: typeof tc?.toolName === 'string' ? tc.toolName : 'unknown',
+        input: tc?.input,
+        ...(reason ? { reason } : {}),
+      };
+    })
+    .filter((d) => d.toolCallId !== '');
 }
 
 /** A step's response messages for the transcript, minus its unexecuted calls. A call with no result
@@ -771,6 +796,13 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
             stuckSignature = signature;
             diagLog('engine.stuck', `${tr.toolName} failed ${n}× with identical input — stopping the turn (resumable)`);
           }
+        }
+        // Denied calls get their terminal event here, with the policy's reason — before
+        // 2026-11-25 they spun forever, and the unexecutedCalls fallback below mislabeled them.
+        for (const dc of deniedCalls(step)) {
+          const ev: ToolEvent = { toolCallId: dc.toolCallId, name: dc.toolName, args: dc.input, state: 'error', detail: `Denied — not approved to run.${dc.reason ? ` (${dc.reason})` : ''}` };
+          toolEvents.push(ev);
+          opts.onTool(ev);
         }
         // Calls that streamed but never executed (a step cut before its completion signal) get their
         // terminal event here — see unexecutedCalls. Without it the 'running' event posted above

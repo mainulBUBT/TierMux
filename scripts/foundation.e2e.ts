@@ -364,6 +364,45 @@ async function main() {
     ok('9. mutating edit applied after ask', ws.read('foo.txt') === 'auto world', `content=${ws.read('foo.txt')}`);
   }
 
+  // ── Scenario 9b: a DENIED call is terminal on the card and intact in the transcript ──────────
+  // QA 2026-11-25: the unexecuted-calls fallback mislabeled a policy denial as "the connection
+  // dropped" and dropped the call from the transcript while KEEPING its denial result — an orphaned
+  // tool result that a Continue would send to providers. A denial is neither: the card says why,
+  // and the call stays paired with its result. ('reject' on the approval card is what denies.)
+  {
+    const ws = makeWorkspace();
+    const model = createMockModel([
+      { toolCalls: [{ toolName: 'editFile', input: { path: 'foo.txt', search: 'hello', replace: 'nope' } }] },
+      { text: 'could not edit' },
+    ], 's9b');
+    const tr = engineTracker();
+    const out = await withCommandApproval('always', () => runWithWorkspaceRoot(ws.root, () => engineTurn(model, engineOpts({
+      messages: [{ role: 'user', content: 'edit foo.txt' }],
+      mode: 'agent',
+      sessionId: 's9b',
+      ...tr.wire('reject'),
+    }))));
+    ok('9b. the approval was asked and rejected', tr.asks.length === 1 && tr.asks[0].toolName === 'editFile', JSON.stringify(tr.asks));
+    ok('9b. the file was NOT edited', ws.read('foo.txt') === 'hello world', `content=${ws.read('foo.txt')}`);
+    const editEvents = tr.tools.filter((e) => e.name === 'editFile');
+    ok('9b. the denied call ends as an error on the card, never left running',
+      editEvents.some((e) => e.state === 'error') && !editEvents.some((e, i) => e.state === 'running' && !editEvents.slice(i + 1).some((x) => x.toolCallId === e.toolCallId && (x.state === 'error' || x.state === 'done'))),
+      JSON.stringify(editEvents.map((e) => e.state)));
+    ok('9b. the card says DENIED, not a dropped connection',
+      JSON.stringify(editEvents).includes('Denied') && !JSON.stringify(editEvents).includes('connection to the model dropped'),
+      JSON.stringify(editEvents.map((e) => e.detail)));
+    const w = model.calls.at(-1)?.messages ?? [];
+    ok('9b. the model is told the call was denied', JSON.stringify(w).includes('denied'), JSON.stringify(w).slice(-260));
+    // The corruption the fallback used to produce: the call dropped from the transcript while its
+    // denial result stayed — a tool result no assistant message answers, which providers reject.
+    const saved = JSON.stringify(out.workMessages ?? []);
+    const orphan = (out.workMessages ?? []).some((m) => m.role === 'tool'
+      && !(out.workMessages ?? []).some((a) => a.role === 'assistant' && (a.tool_calls ?? []).some((c) => c.id === m.tool_call_id)));
+    ok('9b. the saved transcript keeps the call paired with its denial (no orphaned tool result)',
+      !orphan && saved.includes('tool_call_id') && saved.includes('denied'),
+      `orphan=${orphan} saved=${saved.slice(0, 300)}`);
+  }
+
   // ── Scenario 10: full-auto, alwaysDeny wins ──────────────────────────────────
   {
     const ws = makeWorkspace();

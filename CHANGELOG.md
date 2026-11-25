@@ -59,6 +59,11 @@ All notable changes to TierMux are documented here. The format is loosely
 - **Stop no longer cools the model down.** Stopping a reply mid-stream used to count as a failure
   of the model that was answering, so Auto avoided a healthy model for 30 seconds afterwards. An
   abort is the user's decision and leaves the model's record untouched.
+- **A denied tool call says so.** A self-QA pass on 2026-11-25 found that a call the approval policy
+  rejected was reported on its card as "the connection to the model dropped", and the saved
+  transcript kept the denial result while dropping the call it answers — a malformed history a
+  Continue would send to providers. The card now says "Denied — not approved to run" with the
+  policy's reason, and the call stays paired with its result.
 
 ## [3.0.6] — 2026-11-12
 
