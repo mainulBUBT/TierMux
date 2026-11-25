@@ -110,6 +110,17 @@ stream that ended without its completion signal. `readSseStream` returns whether
 provider that ends on `[DONE]` without a finish_reason is still a complete reply. Test:
 `test:e2e:router-sticky` 30–33.
 
+**A torn-down socket is a failover, and Stop is not a failure.** Both found by a live probe on
+2026-11-25 (a real local socket destroyed mid-reply), never by a stub. When a socket dies
+mid-reply, Node's fetch fails the body read with a bare `TypeError: terminated` and hides the
+reason in `cause` (`SocketError: other side closed`, `UND_ERR_SOCKET`); none of the network
+patterns matched it, so the turn did not fail over. `isConnectionDrop` now recognises that error
+and `isFailoverWorthy` accepts it. A drop after the provider's own finish_reason is a complete
+reply on a badly ended body and is kept. A pinned model runs alone, so its drop is its own failure
+with no seam and no failover notice; the seam is posted only when the next candidate is actually
+dialled. An abort (`options.abortSignal`) is the user's Stop and no longer records a failure
+against the model that was answering. Test: `test:e2e:router-sticky` 41–46.
+
 ### B. Utility calls — `routeOnce` (`src/agent/core/routeOnce.ts`)
 
 Chat titles, commit messages, inline completions, inline chat, conversation compaction, plan

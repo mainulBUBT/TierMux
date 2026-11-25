@@ -50,6 +50,15 @@ All notable changes to TierMux are documented here. The format is loosely
   the provider stop and offers Continue.
 - **Diag trace:** each step line carries the model-vs-tool time split from the SDK (`engine.step`),
   and SDK warnings (deprecated options, ignored settings) land in `engine.sdkWarning`.
+- **A reply whose connection is torn down now fails over.** When a socket dies mid-reply, Node's
+  fetch reports a bare `terminated` error with the real reason hidden inside it, which TierMux did
+  not recognise as a network failure — so the next model was never tried. It is now classified as a
+  dropped connection: the next model continues behind the visible seam. A drop that arrives after
+  the provider's own finish signal is treated as a complete reply. A pinned model still fails on its
+  own, with its original error and no "continuing with another" notice.
+- **Stop no longer cools the model down.** Stopping a reply mid-stream used to count as a failure
+  of the model that was answering, so Auto avoided a healthy model for 30 seconds afterwards. An
+  abort is the user's decision and leaves the model's record untouched.
 
 ## [3.0.6] — 2026-11-12
 

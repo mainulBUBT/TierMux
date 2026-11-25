@@ -71,7 +71,25 @@ export function isFailoverWorthy(e: unknown): boolean {
       || e.status === 404 || e.status === 408 || e.status === 413 || e.status === 429
       || (e.status !== undefined && e.status >= 500);
   }
-  return e instanceof Error && /network|fetch failed|timed out|ECONN/i.test(e.message);
+  return e instanceof Error && (/network|fetch failed|timed out|ECONN/i.test(e.message) || isConnectionDrop(e));
+}
+
+/** A connection that dropped under us. When a socket is torn down mid-reply, Node's fetch fails
+ *  the body read with a bare `TypeError: terminated` and hides the real reason in `cause`
+ *  (`SocketError: other side closed`, code UND_ERR_SOCKET). The message alone matches none of the
+ *  network patterns above, so the turn did not fail over. Live repro 2026-11-25: a real local
+ *  socket destroyed mid-reply, readSseStream's reader rejecting with exactly that error. */
+export function isConnectionDrop(e: unknown): boolean {
+  if (!(e instanceof Error)) return false;
+  if (/terminated|other side closed|socket hang up|ECONNRESET|EPIPE/i.test(e.message)) return true;
+  let cause = (e as { cause?: unknown }).cause;
+  for (let depth = 0; cause != null && depth < 4; depth++) {
+    const c = cause as { code?: unknown; message?: unknown; cause?: unknown };
+    if (typeof c.code === 'string' && /^(UND_ERR_SOCKET|UND_ERR_(CONNECT|HEADERS|BODY)_TIMEOUT|ECONNRESET|EPIPE|ETIMEDOUT)/.test(c.code)) return true;
+    if (typeof c.message === 'string' && /other side closed|socket hang up|ECONNRESET|EPIPE/i.test(c.message)) return true;
+    cause = c.cause;
+  }
+  return false;
 }
 
 /** Failover time bounds read from settings (2026-09-22) — they were hard-coded before, so a
@@ -328,6 +346,9 @@ function toolResultToText(output: unknown): string {
  *  text-only, so the picture rides in a user message right after the tool results — the shape
  *  Cline/OpenCode use). withoutToolImages finds these by this prefix. */
 export const TOOL_IMAGE_LEAD = '[Image returned by the ';
+
+/** Shown when a second model continues a reply the first one dropped mid-stream. */
+const TAKEOVER_SEAM = '\n\n*(connection to the model dropped — continuing with another)*\n\n';
 /** Tool images kept as pixels in a request; older ones become a one-line note. Each costs a
  *  vision model ~1k+ tokens on every following step. */
 const MAX_TOOL_IMAGES = 2;
@@ -888,6 +909,9 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             warnings: [],
           };
           } catch (e) {
+            // An abort is the user's Stop (or a parent's deadline), not a failure of the model.
+            // Live probe 2026-11-25: pressing Stop mid-reply put a healthy model into cooldown.
+            if (options.abortSignal?.aborted) throw options.abortSignal.reason ?? e;
             lastError = e;
             candidateError = e;
             recordOutcome(c.platform, c.modelId, false);
@@ -1071,6 +1095,10 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
         const reasoningId = 'reasoning-0';
         let reasoningStarted = false;
         let networkRetried = false;
+        /** Set when a candidate dropped AFTER text had started: the next candidate that is actually
+         *  dialled writes into the same channel behind a visible seam. Deferred until that dial, so
+         *  a pinned model or an exhausted chain never announces a continuation that cannot happen. */
+        let seamPending = false;
         for (let i = 0; ; i++) {
           if (options.abortSignal?.aborted) { controller.error(options.abortSignal.reason ?? new Error('aborted')); return; }
           if (i >= candidates.length) {
@@ -1168,6 +1196,9 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
                 ? AbortSignal.any([options.abortSignal, ttftController.signal])
                 : ttftController.signal;
               let loopCut = false;
+              /** This attempt itself received a finish_reason (unlike `finish`, which an earlier
+               *  nudge attempt of the same candidate may have set). */
+              let sawFinish = false;
               streamEnd = undefined;
 
               // Delayed hedge (opt-in): while THIS attempt is still silent, race the next candidate.
@@ -1217,6 +1248,14 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
               // Time-to-first-chunk is NOT measured here any more (2026-09-05). It existed to
               // feed a learned slow-model demotion in the picker; that is gone, and the engine
               // already logs the same number for diagnostics (engine.ttft, off turn start).
+              // A candidate that takes over after a mid-stream drop: what is already on screen
+              // stays, and this one writes into the SAME channel behind a visible seam rather than
+              // restarting a second copy of the answer. Posted here, at the dial, so a pinned model
+              // or an exhausted chain never announces a continuation that cannot happen.
+              if (seamPending && textStarted) {
+                controller.enqueue({ type: 'text-delta', id: textId, delta: TAKEOVER_SEAM });
+                seamPending = false;
+              }
               // An adopted standby replays its buffered chunks and then continues the request it
               // already has; otherwise this is a fresh request.
               const stream = adopted
@@ -1255,7 +1294,7 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
                   if (chunk.usage) usage = chunk.usage;
                   const choice = chunk.choices?.[0];
                   if (!choice) continue;
-                  if (choice.finish_reason) finish = choice.finish_reason;
+                  if (choice.finish_reason) { finish = choice.finish_reason; sawFinish = true; }
                   const delta = choice.delta ?? {};
                   // Thinking arrives as native reasoning fields or `<think>` markup in content;
                   // the splitter routes both to the reasoning channel without doubling.
@@ -1298,7 +1337,12 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
                   }
                 }
               } catch (e) {
-                if (!loopCut) throw e;
+                // A connection that drops AFTER the provider's own finish_reason is a complete
+                // reply on a badly terminated body — keep it rather than failing over and
+                // re-buying the whole answer. Before that frame the same error is a cut reply.
+                if (sawFinish && isConnectionDrop(e)) {
+                  diagLog('rp.candidate', `${c.platform}::${c.modelId} connection dropped after its finish frame — keeping the reply`);
+                } else if (!loopCut) throw e;
               } finally {
                 // ALWAYS clear, including the throw-before-first-chunk path. A candidate
                 // that fails to connect (the common 429/5xx) skipped the old post-loop
@@ -1408,16 +1452,22 @@ function createPickerProvider(providerOpts: RouterProviderOptions): LanguageMode
             controller.close();
             return;
           } catch (e) {
+            // An abort is the user's Stop (or a parent's deadline), not a failure of the model.
+            // Live probe 2026-11-25: pressing Stop mid-reply put a healthy model into cooldown.
+            if (options.abortSignal?.aborted) { controller.error(options.abortSignal.reason ?? e); return; }
             lastError = e;
             candidateError = e;
             diagLog('rp.candidate', `${c.platform}::${c.modelId} failed after ${Date.now() - candidateStart}ms`);
             recordOutcome(c.platform, c.modelId, false);
             noteModelFailure(c.platform, c.modelId, e instanceof ProviderHttpError ? e.status : undefined, !!tools?.length, e instanceof Error ? e.message : undefined);
             noteCandidateRefusal(c, e, deadPlatforms, !!apiKey, refusals);
-            if (isFailoverWorthy(e)) {
-              // Text already on screen stays; the next candidate continues in the same channel
-              // behind a visible seam rather than restarting a second copy of the answer.
-              if (textStarted) controller.enqueue({ type: 'text-delta', id: textId, delta: '\n\n*(connection to the model dropped — continuing with another)*\n\n' });
+            // A pinned model runs alone (2026-08-31): its dropped connection is its own visible
+            // failure — no failover notice for a continuation that cannot happen.
+            if (isFailoverWorthy(e) && !(providerOpts.pinnedModel && isConnectionDrop(e))) {
+              // Text already on screen stays; the next candidate that is ACTUALLY dialled continues
+              // in the same channel behind a visible seam (seamPending, posted just before that
+              // dial) rather than restarting a second copy of the answer.
+              if (textStarted) seamPending = true;
               providerOpts.onFailover?.(`${c.platform}::${c.modelId}`, e instanceof Error ? e.message : String(e));
               // Same as doGenerate: a confirmed overflow makes the remaining too-small
               // candidates impossible — drop them rather than replay the error on each.

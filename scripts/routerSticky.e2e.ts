@@ -5,7 +5,7 @@
  * provider instance = one turn (engine.ts creates it per runTurn); stickiness lives there.
  * Cross-turn rotation, failover and cooldowns must keep working. Run: npm run test:e2e:router-sticky */
 import { setModelSources, recordOutcome, isInCooldown, __resetTaskRoundCounters } from '../src/router/picker';
-import { createRouterProvider, dropUnfit, isContextOverflow } from '../src/agent/core/routerProvider';
+import { createRouterProvider, dropUnfit, isConnectionDrop, isContextOverflow, isFailoverWorthy } from '../src/agent/core/routerProvider';
 import { ProviderHttpError } from '../src/providers/base';
 import type { FallbackEntry } from '../src/shared/types';
 import type { LanguageModelV4CallOptions } from '@ai-sdk/provider';
@@ -62,7 +62,7 @@ async function streamOnce(
   models: FallbackEntry[],
   scripts: Record<string, (c: ReadableStreamDefaultController<Uint8Array>, signal?: AbortSignal) => void>,
   cfg: Record<string, unknown>,
-  opts: { abortSignal?: AbortSignal; onFailover?: (from: string, reason: string) => void; onModelSelected?: (m: string) => void } = {},
+  opts: { abortSignal?: AbortSignal; pinnedModel?: string; onFailover?: (from: string, reason: string) => void; onModelSelected?: (m: string) => void } = {},
 ): Promise<{ parts: Array<{ type: string; delta?: string; finishReason?: { unified?: string } }>; dialed: string[]; text: string; finish: string; error: unknown }> {
   const g = globalThis as { __tiermuxTestConfig?: Record<string, unknown> };
   const prevCfg = g.__tiermuxTestConfig;
@@ -83,6 +83,7 @@ async function streamOnce(
   try {
     const turn = createRouterProvider({
       taskKind: 'chat',
+      pinnedModel: opts.pinnedModel,
       onFailover: opts.onFailover,
       onModelSelected: opts.onModelSelected && ((_p: string, m: string) => opts.onModelSelected!(m)),
     });
@@ -460,6 +461,66 @@ async function main() {
     setTimeout(() => ctl.abort(), 700);
     const h3 = await streamOnce([entry('groq', H3, 0), entry('groq', S3, 1)], { [H3]: abortable, [S3]: (c) => answer(c, S3, 'never') }, {}, { abortSignal: ctl.signal });
     ok('40. with hedging off (the default) no standby is opened', h3.dialed.join(',') === H3, h3.dialed.join(','));
+  }
+
+  console.log('— a reply whose socket is torn down mid-stream (found by the 2026-11-25 live probe, never by a stub) —');
+  {
+    // What Node's fetch really throws when a socket dies mid-reply: a bare TypeError with the
+    // real reason hidden in `cause`. No stub ever produced it.
+    const drop = (): TypeError => Object.assign(new TypeError('terminated'), { cause: Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' }) });
+    const abort = new DOMException('This operation was aborted', 'AbortError');
+    ok('41. that error is a dropped connection; a user abort is not', isFailoverWorthy(drop()) && isConnectionDrop(drop()) && !isFailoverWorthy(abort),
+      `drop=${isFailoverWorthy(drop())} abort=${isFailoverWorthy(abort)}`);
+
+    const frame = (model: string, delta: Record<string, unknown>, finish: string | null = null): Uint8Array => new TextEncoder()
+      .encode(`data: ${JSON.stringify({ id: 'x', object: 'chat.completion.chunk', model, choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`);
+    const errText = (e: unknown): string => (e instanceof Error ? `${e.name}: ${e.message}` : String(e));
+    const SEAM = '\n\n*(connection to the model dropped — continuing with another)*\n\n';
+
+    // (a) Dropped mid-reply: the next model continues behind the seam and the dropper cools down.
+    const D = 'dropper', E = 'rescuer';
+    const failoversA: string[] = [];
+    const a = await streamOnce([entry('groq', D, 0), entry('groq', E, 1)], {
+      [D]: (c) => { c.enqueue(frame(D, { content: 'half a repl' })); setTimeout(() => c.error(drop()), 50); },
+      [E]: (c) => { c.enqueue(frame(E, { content: ' — finished' }, 'stop')); c.close(); },
+    }, {}, { onFailover: (from) => failoversA.push(from) });
+    ok('42. the reply continues with the next model behind the seam', !a.error && a.finish === 'stop' && a.text === `half a repl${SEAM} — finished`,
+      JSON.stringify({ error: errText(a.error), finish: a.finish, text: a.text }));
+    ok('43. the dropper is reported and cools down; its rescuer does not', failoversA.length === 1 && failoversA[0].includes(D) && isInCooldown('groq', D) && !isInCooldown('groq', E),
+      JSON.stringify({ failoversA, dropper: isInCooldown('groq', D), rescuer: isInCooldown('groq', E) }));
+
+    // (b) The same error AFTER the provider's finish frame is a complete reply on a badly ended body.
+    const F = 'badly-ended';
+    const failoversB: string[] = [];
+    const b = await streamOnce([entry('groq', F, 0)], {
+      [F]: (c) => { c.enqueue(frame(F, { content: 'all there' }, 'stop')); setTimeout(() => c.error(drop()), 30); },
+    }, {}, { onFailover: (from) => failoversB.push(from) });
+    ok('44. a drop after the finish frame keeps the reply instead of failing over', !b.error && b.finish === 'stop' && b.text === 'all there' && failoversB.length === 0 && !isInCooldown('groq', F),
+      JSON.stringify({ error: errText(b.error), finish: b.finish, text: b.text, failoversB, cooled: isInCooldown('groq', F) }));
+
+    // (c) Stop is the user's decision, not a failure of the model.
+    const G = 'stopped-by-user';
+    const ctl = new AbortController();
+    setTimeout(() => ctl.abort(), 150);
+    const c1 = await streamOnce([entry('groq', G, 0)], {
+      [G]: (c, signal) => {
+        c.enqueue(frame(G, { content: 'streaming' }));
+        signal?.addEventListener('abort', () => { try { c.error(signal.reason); } catch { /* already closed */ } }, { once: true });
+      },
+    }, {}, { abortSignal: ctl.signal });
+    ok('45. pressing Stop mid-reply does not cool the model down', c1.error !== undefined && !isInCooldown('groq', G),
+      JSON.stringify({ error: errText(c1.error), cooled: isInCooldown('groq', G) }));
+
+    // (d) A pinned model runs alone: a drop is its own visible failure — no seam, no failover notice.
+    const P = 'pinned-dropper';
+    const failoversD: string[] = [];
+    const d = await streamOnce([entry('groq', P, 0), entry('groq', E, 1)], {
+      [P]: (c) => { c.enqueue(frame(P, { content: 'half a repl' })); setTimeout(() => c.error(drop()), 50); },
+      [E]: (c) => { c.enqueue(frame(E, { content: 'should not run' }, 'stop')); c.close(); },
+    }, {}, { pinnedModel: `groq::${P}`, onFailover: (from) => failoversD.push(from) });
+    ok('46. a pinned model that drops fails on its own: original error, no seam, no other model dialled',
+      errText(d.error) === 'TypeError: terminated' && d.text === 'half a repl' && d.dialed.join(',') === P && failoversD.length === 0,
+      JSON.stringify({ error: errText(d.error), text: d.text, dialed: d.dialed, failoversD }));
   }
 
   globalThis.fetch = realFetch;
