@@ -54,6 +54,14 @@ export type Platform =
   | 'routeway'
   | 'typhoon'
   | 'vlmrun'
+  | 'amd'
+  | 'inferx'
+  | 'kimiforcoding'
+  | 'numes'
+  | 'oneaiapikey'
+  | 'scnet'
+  | 'speka'
+  | 'synap'
   | 'custom';
 
 export type ReasoningEffort = 'off' | 'low' | 'medium' | 'high' | 'xhigh';

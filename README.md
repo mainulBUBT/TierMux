@@ -88,13 +88,13 @@ Details: [Routing](docs/ROUTING.md).
 ## Providers
 
 <!-- catalog:start -->
-**1412 models** across **49 providers**, and the catalog updates itself —
+**740 models** across **53 providers**, and the catalog updates itself —
 new free models and whole new providers appear without an extension update.
 
 | | |
 |---|---|
 | **Keyless — zero setup** | Kilo Gateway · OpenCode Zen · OVH AI Endpoints · Pollinations · VLM Run |
-| **With a free API key** | Agnes AI · AIHubMix · Aion Labs · Api.Airforce · BAILU AI · BazaarLink · Cerebras · Charm Hyper · ChatAnywhere · Cloudflare Workers AI · Cohere · DreamPrompting · Experiential Labs · FreeInference · Google AI Studio · Groq · Kenari · LLM Gateway · LLM7 · LLMTR · MegaNova · Mistral · ModelScope · NagaAI · Nara Router · Nous Portal · NVIDIA NIM · Ollama Cloud · OpenAdapter · OpenRouter · OrcaRouter · Poolside · Requesty · Router9 · Routeway · SambaNova · Token Harbor · Token Router · Typhoon · unorouter · Vyce AI · xKiro · ZenMux · Zhipu AI |
+| **With a free API key** | Agnes AI · AIHubMix · Aion Labs · Api.Airforce · bailu · BazaarLink · Cerebras · charmhyper · ChatAnywhere · Cloudflare Workers AI · Cohere · DreamPrompting · Experiential Labs · freeinference · Google AI Studio · Groq · Kenari · LLM Gateway · LLM7 · LLMTR · MegaNova · Mistral · ModelScope · NagaAI · Nara Router · Nous Portal · Numes · NVIDIA NIM · Ollama Cloud · One AI API Key · openadapter · OpenRouter · OrcaRouter · Poolside · Requesty · Router9 · Routeway · SambaNova · Speka · Synap by Linkrra · Token Harbor · Token Router · Typhoon · unorouter · vyceai · xKiro · ZenMux · Zhipu AI |
 | **Your own** | any OpenAI-compatible URL — vLLM, LiteLLM, LM Studio, Ollama, llama.cpp, Azure OpenAI |
 <!-- catalog:end -->
 

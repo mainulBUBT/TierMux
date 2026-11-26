@@ -52,7 +52,6 @@ const COMPAT: Array<OpenAICompatOpts & { keyUrl?: string }> = [
   { platform: 'nararouter', name: "Nara Router", baseUrl: "https://router.bynara.id/v1", skipPreflight: true, timeoutMs: 600000 }, // auto-synced
   { platform: 'aionlabs', name: "Aion Labs", baseUrl: "https://api.aionlabs.ai/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://www.aionlabs.ai/accounts/login/" }, // auto-synced
   { platform: 'chatanywhere', name: "ChatAnywhere", baseUrl: "https://api.chatanywhere.org/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://chatanywhere.tech/" }, // auto-synced
-  { platform: 'openadapter', name: "OpenAdapter", baseUrl: "https://api.openadapter.in/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://dashboard.openadapter.in/" }, // auto-synced
   { platform: 'orcarouter', name: "OrcaRouter", baseUrl: "https://api.orcarouter.ai/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://www.orcarouter.ai/" }, // auto-synced
   { platform: 'requesty', name: "Requesty", baseUrl: "https://router.requesty.ai/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://app.requesty.ai/sign-up" }, // auto-synced
   { platform: 'router9', name: "Router9", baseUrl: "https://api.router9.com/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://www.router9.com/login" }, // auto-synced
@@ -61,21 +60,25 @@ const COMPAT: Array<OpenAICompatOpts & { keyUrl?: string }> = [
   { platform: 'modelscope', name: "ModelScope", baseUrl: "https://api-inference.modelscope.cn/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://modelscope.cn/my/myaccesstoken" }, // auto-synced
   { platform: 'tokenrouter', name: "Token Router", baseUrl: "https://api.tokenrouter.com/v1", skipPreflight: true, timeoutMs: 600000 }, // auto-synced
   { platform: 'experientiallabs', name: "Experiential Labs", baseUrl: "https://api.experientiallabs.ai/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://platform.experientiallabs.ai/settings" }, // auto-synced
-  { platform: 'bailu', name: "BAILU AI", baseUrl: "https://bailucode.com/openapi/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://bailucode.com/api_platform/" }, // auto-synced
   { platform: 'aihubmix', name: "AIHubMix", baseUrl: "https://aihubmix.com/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://aihubmix.com/" }, // auto-synced
   { platform: 'bazaarlink', name: "BazaarLink", baseUrl: "https://api.bazaarlink.ai/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://bazaarlink.ai/free" }, // auto-synced
   { platform: 'dreamprompting', name: "DreamPrompting", baseUrl: "https://dreamprompting.com/api/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://dreamprompting.com/login" }, // auto-synced
   { platform: 'naga', name: "NagaAI", baseUrl: "https://api.naga.ac/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://naga.ac/" }, // auto-synced
   { platform: 'nous', name: "Nous Portal", baseUrl: "https://inference-api.nousresearch.com/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://portal.nousresearch.com/" }, // auto-synced
-  { platform: 'vyceai', name: "Vyce AI", baseUrl: "https://vyceai.com/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://vyceai.com" }, // auto-synced
   { platform: 'tokenharbor', name: "Token Harbor", baseUrl: "https://tokenharbor.ai/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://tokenharbor.ai/dashboard/api-keys" }, // auto-synced
-  { platform: 'charmhyper', name: "Charm Hyper", baseUrl: "https://hyper.charm.land/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://hyper.charm.land" }, // auto-synced
-  { platform: 'freeinference', name: "FreeInference", baseUrl: "https://freeinference.org/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://freeinference.org" }, // auto-synced
   { platform: 'llmtr', name: "LLMTR", baseUrl: "https://llmtr.com/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://llmtr.com" }, // auto-synced
   { platform: 'meganova', name: "MegaNova", baseUrl: "https://api.meganova.ai/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://meganova.ai" }, // auto-synced
   { platform: 'routeway', name: "Routeway", baseUrl: "https://api.routeway.ai/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://routeway.ai" }, // auto-synced
   { platform: 'typhoon', name: "Typhoon", baseUrl: "https://api.opentyphoon.ai/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://opentyphoon.ai" }, // auto-synced
   { platform: 'vlmrun', name: "VLM Run", baseUrl: "https://gateway.vlm.run/v1/openai", skipPreflight: true, timeoutMs: 600000, keyless: true, keyUrl: "https://app.vlm.run/dashboard/settings/api-keys" }, // auto-synced
+  { platform: 'amd', name: "AMD Developer Cloud", baseUrl: "https://cloud.amd.com/api/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://cloud.amd.com" }, // auto-synced
+  { platform: 'inferx', name: "InferX", baseUrl: "https://model.inferx.net/endpoints/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://model.inferx.net/endpoints" }, // auto-synced
+  { platform: 'kimiforcoding', name: "Kimi For Coding (Moonshot)", baseUrl: "https://api.kimi.ai/coding/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://www.kimi.ai/code" }, // auto-synced
+  { platform: 'numes', name: "Numes", baseUrl: "https://api.numes.ai/api/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://numes.ai" }, // auto-synced
+  { platform: 'oneaiapikey', name: "One AI API Key", baseUrl: "https://api.oneaiapikey.com/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://oneaiapikey.com" }, // auto-synced
+  { platform: 'scnet', name: "SCNet", baseUrl: "https://api.scnet.cn/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://www.scnet.cn" }, // auto-synced
+  { platform: 'speka', name: "Speka", baseUrl: "https://speka.me/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://speka.me" }, // auto-synced
+  { platform: 'synap', name: "Synap by Linkrra", baseUrl: "https://synap402.com/v1", skipPreflight: true, timeoutMs: 600000, keyUrl: "https://synap402.com/ai/account.html" }, // auto-synced
 ];
 
 const providers = new Map<Platform, BaseProvider>();
