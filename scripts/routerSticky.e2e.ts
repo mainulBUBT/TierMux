@@ -57,7 +57,8 @@ const step = (): LanguageModelV4CallOptions => ({
 } as unknown as LanguageModelV4CallOptions);
 
 /** Streams scripted SSE bodies — one script per model id — through a fresh router provider and
- *  returns what the SDK would have seen. Restores fetch, config and sources afterwards. */
+ *  returns what the SDK would have seen. Restores fetch and config afterwards; the sources it
+ *  installs STAY (every later section re-sets them before its own assertions). */
 async function streamOnce(
   models: FallbackEntry[],
   scripts: Record<string, (c: ReadableStreamDefaultController<Uint8Array>, signal?: AbortSignal) => void>,

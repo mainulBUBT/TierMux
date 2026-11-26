@@ -1181,6 +1181,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           runningMode: target.lastMode, sentMode: m.mode,
         }) && await target.steer!(m.text)) {
           this.post({ type: 'userEcho', sessionId: target.id, requestId: m.requestId, text: m.text });
+          // Keep it in the visible transcript too (review 2026-11-25, finding 2): userEcho alone
+          // loses the bubble on a session switch or reload while the reply that references it
+          // stays. historyLen is left unset on purpose — the message lands in s.history via
+          // workMessages at turn end, and reverting to this entry rebuilds history honestly.
+          target.transcript.push({ role: 'user', text: m.text, requestId: m.requestId, ts: Date.now() });
+          this.persist(target.id);
           break;
         }
         if (target.activeRequestId || target.queuedSends?.length) {

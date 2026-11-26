@@ -64,6 +64,17 @@ All notable changes to TierMux are documented here. The format is loosely
   transcript kept the denial result while dropping the call it answers — a malformed history a
   Continue would send to providers. The card now says "Denied — not approved to run" with the
   policy's reason, and the call stays paired with its result.
+- **Review fixes (2026-11-27 code review of the whole SDK-update range):**
+  - A message steered into a running turn survives the step failing on the wire — it is in the
+    transcript Continue sends, and in the host's visible transcript across session switches and
+    reloads.
+  - A steer that extends the pass past a finished answer keeps both answers in the bubble, not
+    only the revision.
+  - A denied edit is no longer reported as a changed file, so the work report and the verify gate
+    do not run for work that never happened.
+  - A step cut by the provider at exactly the step cap is labeled a provider stop, not "budget".
+  - Anthropic and Gemini adapters now report how their stream ended, so a cut reply on those wire
+    formats also pauses with Continue instead of shipping truncated.
 
 ## [3.0.6] — 2026-11-12
 

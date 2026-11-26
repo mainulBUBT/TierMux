@@ -384,6 +384,10 @@ async function main() {
     }))));
     ok('9b. the approval was asked and rejected', tr.asks.length === 1 && tr.asks[0].toolName === 'editFile', JSON.stringify(tr.asks));
     ok('9b. the file was NOT edited', ws.read('foo.txt') === 'hello world', `content=${ws.read('foo.txt')}`);
+    // Review finding 4: a denied call is not a change — no changed-file entry, so no work report
+    // and no verify pass for work that never happened.
+    ok('9b. the denied edit is not reported as a changed file', !(out.changedFiles ?? []).some((f) => f.path === 'foo.txt') && !out.workReport,
+      JSON.stringify({ changed: out.changedFiles, report: out.workReport }));
     const editEvents = tr.tools.filter((e) => e.name === 'editFile');
     ok('9b. the denied call ends as an error on the card, never left running',
       editEvents.some((e) => e.state === 'error') && !editEvents.some((e, i) => e.state === 'running' && !editEvents.slice(i + 1).some((x) => x.toolCallId === e.toolCallId && (x.state === 'error' || x.state === 'done'))),

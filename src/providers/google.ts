@@ -397,5 +397,7 @@ export class GoogleProvider extends BaseProvider {
         ...(lastUsage.thoughtsTokenCount !== undefined ? { reasoning_tokens: thoughts } : {}),
       });
     }
+    // How the stream ended, for routerProvider's cut detection (review 2026-11-25, finding 5).
+    return 'eof';
   }
 }

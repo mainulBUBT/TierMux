@@ -168,6 +168,33 @@ async function main() {
     ok('a steer sent before the first step is that step\'s input',
       (await early) === true && JSON.stringify(m2.calls[0].messages).includes('keep it short')
       && indexOfUser(w2) === 0 && w2.filter((x) => x.role === 'user').length === 1, JSON.stringify(w2));
+
+    // (c) Review finding 1: the steered step's model call dies on the wire — the turn pauses as a
+    // provider stop, and the message the user already saw echoed must be IN the resume transcript.
+    const m3 = createMockModel([
+      { toolCalls: [{ toolName: 'readFile', input: { path: 'a.txt' } }] },
+      { error: new Error('TierMux: all 6 model candidates failed') },
+    ], 'steer-wire-died');
+    let handle3: ((t: string) => Promise<boolean>) | undefined;
+    let steered3: Promise<boolean> | undefined;
+    const r3 = await turn(m3, {
+      onSteerReady: (s) => { handle3 = s; },
+      onTool: () => { if (handle3 && !steered3) steered3 = handle3('also read b.txt'); },
+    });
+    const w3 = r3.workMessages ?? [];
+    ok('a steer into a step that dies on the wire survives for Continue',
+      (await steered3) === true && r3.paused === true && r3.stopReason === 'provider'
+      && w3.some((x) => x.role === 'user' && x.content === 'also read b.txt'), JSON.stringify(w3));
+
+    // (d) Review finding 3: a steer that extends the pass past a finished answer keeps BOTH the
+    // answers — taking only the last step's text would wipe the first from bubble and transcript.
+    const m4 = createMockModel([{ text: 'First answer.' }, { text: 'Revised answer.' }], 'steer-two-answers');
+    let handle4: ((t: string) => Promise<boolean>) | undefined;
+    let steered4: Promise<boolean> | undefined;
+    const r4 = await turn(m4, { onSteerReady: (s) => { handle4 = s; }, onChunk: (t) => { if (handle4 && t.includes('First answer') && !steered4) steered4 = handle4('use the other branch'); } });
+    ok('a steer that extends the pass keeps both shipped answers',
+      (await steered4) === true && r4.text.includes('First answer.') && r4.text.includes('Revised answer.'),
+      JSON.stringify(r4.text));
   }
 
   fs.rmSync(root, { recursive: true, force: true });

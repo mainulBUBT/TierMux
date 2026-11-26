@@ -172,17 +172,19 @@ function toChatMessages(messages: ModelMessage[]): ChatMessage[] {
     } else if (m.role === 'tool') {
       for (const part of m.content) {
         if (part.type === 'tool-result') {
-          const o = part.output as { type?: string; value?: unknown } | undefined;
+          const o = part.output as { type?: string; value?: unknown; reason?: unknown } | undefined;
           // A `content` output (text + an image for vision models): history keeps the text and
           // a note — base64 pixels never go into the persisted transcript.
           const value = typeof part.output === 'string' ? part.output
             : o?.type === 'text'
               ? String(o.value ?? '')
-              : o?.type === 'content' && Array.isArray(o.value)
-                ? (o.value as Array<{ type?: string; text?: unknown; mediaType?: unknown }>)
-                    .map((p) => (p?.type === 'text' ? String(p.text ?? '') : `[${String(p?.mediaType ?? 'file')} shown to the model in that step]`))
-                    .join('\n')
-                : JSON.stringify(part.output);
+              : o?.type === 'execution-denied'
+                ? `Tool execution denied by the user${typeof o.reason === 'string' && o.reason ? `: ${o.reason}` : ''}`
+                : o?.type === 'content' && Array.isArray(o.value)
+                  ? (o.value as Array<{ type?: string; text?: unknown; mediaType?: unknown }>)
+                      .map((p) => (p?.type === 'text' ? String(p.text ?? '') : `[${String(p?.mediaType ?? 'file')} shown to the model in that step]`))
+                      .join('\n')
+                  : JSON.stringify(part.output);
           out.push({ role: 'tool', content: value, tool_call_id: part.toolCallId });
         }
       }
@@ -191,13 +193,21 @@ function toChatMessages(messages: ModelMessage[]): ChatMessage[] {
   return out;
 }
 
-/** Files this turn touched, derived deterministically from the executed tool calls. */
+/** Files this turn touched, derived deterministically from the executed tool calls. A call the
+ *  approval policy DENIED is not a change (review 2026-11-25, finding 4): its paired tool result
+ *  is the denial sentence toChatMessages writes for an execution-denied output, and counting it
+ *  claimed work that never happened — work report "M" badge, verify command, fix rounds. */
 function changedFilesFrom(messages: ChatMessage[]): Array<{ path: string; status: 'created' | 'modified' | 'deleted' }> {
   const out: Array<{ path: string; status: 'created' | 'modified' | 'deleted' }> = [];
   const seen = new Set<string>();
+  const denied = new Set<string>(
+    messages.filter((m) => m.role === 'tool' && typeof m.content === 'string' && m.content.startsWith('Tool execution denied'))
+      .map((m) => m.tool_call_id ?? ''),
+  );
   for (const m of messages) {
     if (m.role !== 'assistant' || !m.tool_calls) continue;
     for (const tc of m.tool_calls) {
+      if (denied.has(tc.id)) continue;
       let input: { path?: string; out?: string } = {};
       try { input = JSON.parse(tc.function.arguments || '{}'); } catch { continue; }
       if (tc.function.name === 'renderImage' && input.out) input = { path: input.out.replace(/\.[A-Za-z0-9]+$/, '') + '.png' };
@@ -520,6 +530,11 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
    *  included — join the transcript here instead of vanishing (the pass-1 path does the same
    *  after its catch). After a clean pass onEnd already emptied unsettledWork, so this is a no-op. */
   const settleUnsettled = (): void => {
+    // A steer delivered into a step that never completed would otherwise vanish (review
+    // 2026-11-25, finding 1): steeredForStep is folded only by onStepEnd/onEnd, and neither runs
+    // when the step's stream errors — the user's message is already echoed in the webview.
+    for (const msgs of steeredForStep.values()) outcome.responseMessages.push(...msgs);
+    steeredForStep.clear();
     outcome.responseMessages.push(...unsettledWork);
     unsettledWork = [];
   };
@@ -837,23 +852,36 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
         // Last NON-empty step text, not steps.at(-1): a reasoning model can emit text + a tool
         // call, then a silent step (gpt-oss-120b: 270 out tokens discarded at settle).
         // Cap hit WHILE still calling tools ⇒ cut, not finished. A final answer landing exactly
-        // on step `maxSteps` also satisfies stepCountIs, and that turn IS complete.
-        if (steps.length >= maxSteps && (steps.at(-1)?.toolCalls?.length ?? 0) > 0) {
+        // on step `maxSteps` also satisfies stepCountIs, and that turn IS complete. A step cut by
+        // the provider (interrupted) is not a cap hit even when it lands on the cap (review
+        // 2026-11-25, finding 6) — the pause would be mislabeled budget.
+        if (fr !== 'interrupted' && steps.length >= maxSteps && (steps.at(-1)?.toolCalls?.length ?? 0) > 0) {
           hitStepCap = true;
           diagLog('engine.stepCap', `stopped at the ${maxSteps}-step cap with tool calls still in flight — turn is resumable`);
         }
         // A cut pass contributes only what its OWN last step streamed: an earlier step's planning
         // narration is not the reply to a turn that never finished, and when the cut step was
         // calling tools its text is narration by onChunk's rule, so nothing ships (readLoop 3d).
+        // A pass that received steers can have TWO user-shipped answers (the pre-steer answer and
+        // the post-steer revision); taking only the last wipes the first from the bubble and from
+        // the transcript (review finding 3) — concatenate the tool-less text steps in order.
+        // Steps whose text arrived WITH a tool call are planning narration (onChunk retracted it)
+        // and stay out.
         const lastStep = steps.at(-1);
+        const steeredAnswers = steeredForStep.size > 0
+          ? steps.filter((s) => (s.toolCalls?.length ?? 0) === 0 && s.text?.trim()).map((s) => s.text.trim())
+          : [];
         const passText = fr === 'interrupted'
           ? ((lastStep?.toolCalls?.length ?? 0) > 0 ? '' : (lastStep?.text ?? ''))
-          : [...steps].reverse().find((s) => s.text?.trim())?.text ?? '';
+          : steeredAnswers.length > 1
+            ? steeredAnswers.join('\n\n')
+            : [...steps].reverse().find((s) => s.text?.trim())?.text ?? '';
         outcome = {
           finishReason: fr,
           text: passText || outcome.text,
           responseMessages: [...outcome.responseMessages, ...steps.flatMap((s) => [...steeredBefore(s), ...stepMessages(s)])],
         };
+        steeredForStep.clear();
       },
     });
     // Announced only once the loop exists — a steer sent before that has nothing to take it.
@@ -900,6 +928,14 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
       };
     }
     if (!aborted) opts.onError(message);
+    // The throw path never reaches onEnd, so the pass's finished steps and any steer delivered
+    // into a step that did not finish live only in unsettledWork/steeredForStep — fold both, or a
+    // resume loses the edits already made and the message the user already saw echoed (review
+    // 2026-11-25, findings 1 and 7).
+    outcome.responseMessages.push(...unsettledWork);
+    for (const msgs of steeredForStep.values()) outcome.responseMessages.push(...msgs);
+    steeredForStep.clear();
+    unsettledWork = [];
     return {
       text: outcome.text,
       reasoning: reasoningText || undefined,
@@ -915,6 +951,11 @@ export async function runTurn(_router: unknown, opts: AgentOpts): Promise<AgentR
   }
 
   outcome.responseMessages.push(...unsettledWork);
+  // Main-pass wire failure: onEnd never ran, so a steer delivered into the failing step is still
+  // only in steeredForStep (review 2026-11-25, finding 1) — the user already saw it echoed.
+  for (const msgs of steeredForStep.values()) outcome.responseMessages.push(...msgs);
+  steeredForStep.clear();
+  unsettledWork = [];
 
   // Dead-at-start abort, RESOLVED path: consumeStream resolves on abort (ai v7), so the catch
   // block's guard never ran and Stop within the first second returned a "successful" blank

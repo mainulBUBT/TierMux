@@ -368,5 +368,8 @@ export class AnthropicMessagesProvider extends BaseProvider {
 
     yield frame([{ index: 0, delta: {}, finish_reason: sawToolCall ? 'tool_calls' : stopReason === 'max_tokens' ? 'length' : 'stop' }]);
     yield frame([], { prompt_tokens: inputTokens, completion_tokens: outputTokens, total_tokens: inputTokens + outputTokens });
+    // How the stream ended, for routerProvider's cut detection (review 2026-11-25, finding 5):
+    // reaching here is a clean end — 'eof' matters only when no finish_reason was ever sent.
+    return 'eof';
   }
 }
