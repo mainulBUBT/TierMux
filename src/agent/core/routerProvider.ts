@@ -20,6 +20,7 @@ import { estimateMessagesTokens, estimateTokens } from '../budget';
 import { ThinkStripper, stripThinkTags, reasoningFromDelta } from '../../util/thinkTags';
 import { adoptInlineToolCalls, foldNamelessToolCalls, sanitizeToolName } from '../toolArgs';
 import { diagLog } from '../../util/diag';
+import { clearTimeout, setTimeout } from 'node:timers';
 
 /** Post-headers STALL bound: a stream that has produced no chunk at all is abandoned after this
  *  (headers then no body — no header timeout can fire). Tracks FAILOVER_CONNECT_TIMEOUT_MS; the
