@@ -125,13 +125,30 @@ export function createTodoSheet(opts: TodoSheetOptions = {}): {
   const sheetCount = el('span', { class: 'tm-todosheet-count' });
   const sheetMin = el('button', { type: 'button', class: 'tm-todosheet-min', title: 'Minimize' }, '▾');
   sheetHead.append(sheetTitle, sheetCount, sheetMin);
+  const progress = el('div', {
+    class: 'tm-todosheet-progress hidden',
+    role: 'progressbar',
+    'aria-label': 'Task progress',
+    'aria-valuemin': '0',
+    'aria-valuemax': '1',
+    'aria-valuenow': '0',
+    'aria-valuetext': '0 steps complete',
+  }, el('div', { class: 'tm-todosheet-progress-fill' }));
   const sheetList = el('div', { class: 'tm-todosheet-list' });
-  sheet.append(sheetHead, sheetList);
+  sheet.append(sheetHead, progress, sheetList);
+  const announcement = el('div', {
+    class: 'tm-todosheet-status',
+    role: 'status',
+    'aria-live': 'polite',
+    'aria-atomic': 'true',
+  });
+  root.append(bar, sheet, announcement);
 
   const render = (): void => {
     if (!current) { bar.classList.add('hidden'); sheet.classList.add('hidden'); return; }
     const { steps } = current;
     const done = steps.filter(s => s.status === 'done').length;
+    const total = steps.length;
     const active = steps.find(s => s.status === 'active');
     bar.classList.remove('hidden');
     bar.classList.toggle('running', !!current.running);
@@ -154,7 +171,13 @@ export function createTodoSheet(opts: TodoSheetOptions = {}): {
     barChev.textContent = openState ? '▾' : '▴';
 
     sheetTitle.textContent = current.title;
-    sheetCount.textContent = steps.length ? `${done}/${steps.length}` : '';
+    sheetCount.textContent = total ? `${done}/${total}` : '';
+    progress.classList.toggle('hidden', !total || !!current.preparing);
+    progress.setAttribute('aria-valuemax', String(Math.max(1, total)));
+    progress.setAttribute('aria-valuenow', String(done));
+    progress.setAttribute('aria-valuetext', `${done} of ${total} ${total === 1 ? 'step' : 'steps'} complete`);
+    const progressFill = progress.firstElementChild as HTMLElement;
+    progressFill.style.width = `${total ? Math.round((done / total) * 100) : 0}%`;
     sheetList.innerHTML = '';
     if (current.preparing) {
       sheetList.appendChild(el('div', { class: 'tm-todosheet-empty' }, 'Starting the agent — the steps will appear here as soon as execution begins.'));
@@ -193,15 +216,59 @@ export function createTodoSheet(opts: TodoSheetOptions = {}): {
     render();
   }
 
+  const announceUpdate = (previous: TodoSheetState | null, next: TodoSheetState | null): void => {
+    if (!next) { announcement.textContent = ''; return; }
+    const done = next.steps.filter((step) => step.status === 'done').length;
+    const total = next.steps.length;
+    const failed = next.steps.filter((step) => step.status === 'failed').length;
+    const active = next.steps.find((step) => step.status === 'active');
+    const summary = `${done} of ${total} ${total === 1 ? 'step' : 'steps'} complete.`;
+
+    if (!previous) {
+      if (next.preparing) announcement.textContent = `Preparing ${next.title.toLowerCase()}.`;
+      else if (total) announcement.textContent = `${next.title}: ${summary}${active ? ` Current step: ${active.text}.` : ''}`;
+      return;
+    }
+
+    if (next.finished && !previous.finished) {
+      announcement.textContent = failed
+        ? `${next.title} finished with ${failed} failed ${failed === 1 ? 'step' : 'steps'}. ${summary}`
+        : `${next.title} completed. ${summary}`;
+      return;
+    }
+    if (next.paused && !previous.paused) {
+      announcement.textContent = `${next.title} paused. ${summary}`;
+      return;
+    }
+
+    const previousFailed = previous.steps.filter((step) => step.status === 'failed').length;
+    if (failed > previousFailed) {
+      const newFailure = next.steps.find((step) =>
+        step.status === 'failed' && !previous.steps.some((old) => old.text === step.text && old.status === 'failed'));
+      announcement.textContent = `Step failed${newFailure ? `: ${newFailure.text}` : ''}. ${summary}`;
+      return;
+    }
+
+    const previousDone = previous.steps.filter((step) => step.status === 'done').length;
+    const previousActive = previous.steps.find((step) => step.status === 'active');
+    if (done > previousDone) {
+      announcement.textContent = `${summary}${active && active.text !== previousActive?.text ? ` Current step: ${active.text}.` : ''}`;
+    } else if (active && active.text !== previousActive?.text) {
+      announcement.textContent = `Current step: ${active.text}. ${summary}`;
+    } else if (total !== previous.steps.length) {
+      announcement.textContent = `${next.title} updated. ${summary}`;
+    }
+  };
+
   bar.addEventListener('click', () => (openState ? closeSheet() : openSheet()));
   sheetMin.addEventListener('click', closeSheet);
-  root.append(bar, sheet);
 
   return {
     root,
     open: openSheet,
     close: closeSheet,
     update(state) {
+      announceUpdate(current, state);
       current = state;
       if (state) armAutoClear(state);
       else if (autoClearTimer) { clearTimeout(autoClearTimer); autoClearTimer = undefined; clearAfterClose = false; }

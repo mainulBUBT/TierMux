@@ -326,6 +326,25 @@
 }
 .tm-todosheet-title { font-size: var(--tm-text-base); font-weight: 600; color: var(--tm-fg); }
 .tm-todosheet-count { font-size: var(--tm-text-sm); color: var(--tm-fg-muted); font-variant-numeric: tabular-nums; }
+.tm-todosheet-progress {
+  flex: 0 0 auto;
+  height: 4px;
+  margin: 0 4px var(--tm-gap-sm);
+  overflow: hidden;
+  border-radius: var(--tm-radius-full);
+  background: var(--tm-surface-panel);
+}
+.tm-todosheet-progress.hidden { display: none; }
+.tm-todosheet-progress-fill {
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--tm-accent);
+  transition: width var(--tm-transition-base);
+}
+@media (prefers-reduced-motion: reduce) {
+  .tm-todosheet-progress-fill { transition: none; }
+}
 .tm-todosheet-min {
   margin-left: auto; flex: 0 0 auto;
   border: 1px solid var(--tm-card-border); border-radius: var(--tm-radius-sm);
@@ -346,6 +365,17 @@
 .tm-todosheet-step.pending .tm-todosheet-text { color: var(--tm-fg-muted); }
 .tm-todosheet-step.failed .tm-todosheet-text { color: var(--tm-fg); }
 .tm-todosheet-text { min-width: 0; overflow-wrap: anywhere; }
+.tm-todosheet-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 
 /* ── Responsive — VS Code sidebars dock well under 400px. The agent/model triggers
    shrink by their labels; below 300px clamp them so the primary row (agent / model /

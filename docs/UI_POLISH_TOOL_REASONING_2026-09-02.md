@@ -241,3 +241,12 @@ grouping renders and updates without error (see the caveat above) before
 treating item 1 as fully done. After that: item 6 (the icon set) and the
 `input-streaming`/`input-available` split noted in the alignment-check
 section above remain unstarted.
+
+## Accessibility follow-up (2026-11-27)
+
+Tool and reasoning disclosure triggers are native buttons with synchronized
+`aria-expanded` state and `aria-controls` targets. The live tool renderer shares
+the tool header builder with replay, and keyboard focus reveals its disclosure
+and action controls. `npm run test:e2e:ui-disclosures` covers these DOM
+behaviors, including reasoning auto-collapse; it does not exercise live
+multi-file-read grouping in a running extension.

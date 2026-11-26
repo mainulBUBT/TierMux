@@ -15,8 +15,14 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  width: 100%;
   gap: var(--tm-gap-sm);
   padding: var(--tm-gap-sm) var(--tm-gap-md);
+  border: 0;
+  border-radius: var(--tm-radius-sm);
+  background: transparent;
+  font: inherit;
+  text-align: left;
   cursor: pointer;
   user-select: none;
   color: var(--tm-fg-muted);

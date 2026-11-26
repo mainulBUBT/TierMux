@@ -10,7 +10,7 @@ import { $, escapeHtml, showToast } from './dom';
 import { renderMarkdown, appendStreamCursor } from './markdown';
 import { stripLegacyMarkdown } from '../../src/shared/workReport';
 import { renderPdfToPageImages, PDF_MAX_RENDER_PAGES } from './pdfPages';
-import { buildReasoningBlock, updateReasoningBlock, settleReasoningBlock, buildToolCard, buildEditDiff, editDiffArgs, toolLabel, activityFor, buildToolGroupRow, GROUPABLE_TOOL_NAMES, toolStateGlyph } from './ui/tool/ToolCard';
+import { buildReasoningBlock, updateReasoningBlock, settleReasoningBlock, buildToolCard, buildEditDiff, editDiffArgs, toolLabel, activityFor, buildToolGroupRow, GROUPABLE_TOOL_NAMES, toolStateGlyph, createToolHeader, toolDisclosureId } from './ui/tool/ToolCard';
 import { createPlan, planDataFromStepText, planDataFromTodos, createResultCard } from './ui/components';
 import { createAgentPicker } from './ui/components/AgentPicker';
 import { createModelPicker } from './ui/components/ModelPicker';
@@ -2482,6 +2482,7 @@ import { handleToolStatus } from './handlers/toolStatus';
     // `.tm-tool-group-target` branch above — so this can reset unconditionally.
     if (!existingEl) t.pendingReadGroup = null;
 
+    const { title, hint } = toolLabel(msg.name, msg.args, msg.detail, msg.state);
     let card = t.tools.querySelector(`[data-tc~="${msg.toolCallId}"]`);
     if (!card) {
       // Create AI Elements-style tool card structure
@@ -2489,31 +2490,18 @@ import { handleToolStatus } from './handlers/toolStatus';
       card.className = 'tm-tool-card';
       card.dataset.tc = msg.toolCallId;
 
-      // AI Elements header structure
-      const header = document.createElement('div');
-      header.className = 'tm-tool-card-header';
-      header.innerHTML = `
-        <div class="tm-tool-card-info">
-          <span class="tm-tool-card-icon"></span>
-          <span class="tm-tool-card-title"></span>
-          <span class="tm-tool-card-hint"></span>
-        </div>
-        <span class="tm-tool-card-duration"></span>
-        <span class="tm-tool-card-chevron" aria-hidden="true">▾</span>
-        <div class="tm-tool-card-actions"></div>
-      `;
+      const header = createToolHeader(title, hint || '', msg.state);
 
-      // AI Elements body structure
+      // The header button controls the complete output region in live and replay views.
       const body = document.createElement('div');
-      body.className = 'tm-tool-card-body hidden';
+      body.className = 'tm-tool-card-body';
+      body.id = toolDisclosureId();
       body.innerHTML = `<pre class="tm-tool-card-output"></pre>`;
 
       card.appendChild(header);
       card.appendChild(body);
       t.tools.appendChild(card);
     }
-
-    const { title, hint } = toolLabel(msg.name, msg.args, msg.detail, msg.state);
 
     // Update AI Elements header. The leading slot is the STATE glyph (spinner / green ✓ / red
     // ✗) — the same tick every row in the timeline carries, from toolStateGlyph(), so the live
@@ -2538,6 +2526,7 @@ import { handleToolStatus } from './handlers/toolStatus';
     const isValidation = msg.name === 'runCommand' && /\b(tsc|eslint|prettier|lint|typecheck|check|jest|vitest|mocha|pytest|go\s+test|cargo\s+(check|test)|npm\s+test|yarn\s+test|pnpm\s+test)\b/.test(
       String(msg.args && typeof msg.args === 'object' ? (msg.args.command ?? JSON.stringify(msg.args)) : msg.args || '')
     );
+    const wasOpen = card.classList.contains('open');
     let cls = `tm-tool-card ${msg.state}`;
     if (isValidation) cls += ' validation';
     card.className = cls;
@@ -2552,22 +2541,31 @@ import { handleToolStatus } from './handlers/toolStatus';
     const editDiff = isEdit ? editDiffArgs(editArgs) : null;
     if (editDiff) {
       // Threshold-gated unified diff (same builder the static card uses — live == replay).
-      pre.textContent = '';
-      body.replaceWith(buildEditDiff(editDiff.before, editDiff.after, editDiff.path));
+      body.replaceChildren(buildEditDiff(editDiff.before, editDiff.after, editDiff.path));
       hasBody = true;
     } else if (msg.detail) {
-      pre.className = 'tm-tool-card-output';
-      pre.textContent = msg.detail;
-      body.classList.remove('hidden');
+      const output = pre || document.createElement('pre');
+      body.replaceChildren(output);
+      output.className = 'tm-tool-card-output';
+      output.textContent = msg.detail;
       hasBody = true;
     } else {
-      body.classList.add('hidden');
+      body.replaceChildren();
     }
     // Collapsed by default — the chip (icon + verb title + hint) summarises the step; the user
     // clicks the row to expand details. Only reveal the expand chevron when there's a body. We do
     // NOT auto-open here, so a step with output stays a tidy one-liner until the user opts in.
     // (card.className was just reset above, so toggle has-body onto the fresh class list.)
     card.classList.toggle('has-body', hasBody);
+    const toggle = card.querySelector<HTMLButtonElement>('.tm-tool-card-toggle');
+    toggle.setAttribute('aria-controls', body.id);
+    toggle.disabled = !hasBody;
+    if (!hasBody) {
+      card.classList.remove('open');
+      toggle.setAttribute('aria-expanded', 'false');
+    } else if (wasOpen) {
+      card.classList.add('open');
+    }
     
     // Add progress bar for running tools
     const existingProgress = card.querySelector('.tm-tool-card-progress');
@@ -2586,7 +2584,7 @@ import { handleToolStatus } from './handlers/toolStatus';
     // every subsequent upsert for the same toolCallId (e.g. a later unrelated re-render).
     if (msg.state === 'error' && hasBody && !card.dataset.errorAutoOpened) {
       card.dataset.errorAutoOpened = '1';
-      body.classList.add('open');
+      card.classList.add('open');
     }
     // An applied edit opens itself too (same one-time rule): it is the one step that changed
     // the user's code, and a diff behind a click is a change they never actually saw. Mirrors
@@ -2595,20 +2593,14 @@ import { handleToolStatus } from './handlers/toolStatus';
       card.dataset.editAutoOpened = '1';
       card.classList.add('open');
     }
-    // Toggle card class for expanded state
-    if (body.classList.contains('open')) {
-      card.classList.add('open');
-    } else {
-      card.classList.remove('open');
-    }
+    toggle.setAttribute('aria-expanded', String(card.classList.contains('open')));
     
-    // Add header click handler for toggling
-    const header = card.querySelector('.tm-tool-card-header');
-    if (header && !header.hasAttribute('data-has-handler')) {
-      header.setAttribute('data-has-handler', 'true');
-      header.addEventListener('click', () => {
-        card.classList.toggle('open');
-        body.classList.toggle('open');
+    // A native button supplies Enter/Space activation without making Retry/Cancel nested controls.
+    if (!toggle.hasAttribute('data-has-handler')) {
+      toggle.setAttribute('data-has-handler', 'true');
+      toggle.addEventListener('click', () => {
+        const open = card.classList.toggle('open');
+        toggle.setAttribute('aria-expanded', String(open));
       });
     }
     

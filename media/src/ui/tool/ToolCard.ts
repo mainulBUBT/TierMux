@@ -3,10 +3,15 @@
 import { renderMarkdown } from '../../markdown';
 import { fmtDuration, fmtToolDuration } from '../../format';
 import { el } from '../dom';
-import { createCollapse } from '../primitives/Collapse';
 import { unifiedDiff } from '../../format/unifiedDiff';
 
 // ========== Constants ==========
+
+let nextDisclosureId = 0;
+
+export function toolDisclosureId(): string {
+  return `tm-tool-disclosure-${++nextDisclosureId}`;
+}
 
 /** Shared live/settled status glyph: a spinning ring while running, a static mark once
  *  settled. One vocabulary for reasoning blocks and tool rows alike (CSS: .tm-spin-glyph). */
@@ -39,7 +44,7 @@ export const DIFF_PREVIEW_MAX_CHANGED_LINES = 2000;
 /** The `.tm-tool-card-header` row: state glyph + title + hint + duration + actions.
  *  The leading slot is the STATE tick (toolStateGlyph), not a per-tool glyph — every row in
  *  the timeline reads "✓ Searched …" / "✓ Fetched …" the way the grouped read rows do. */
-function createToolHeader(title: string, hint: string, state: 'running' | 'done' | 'error' | 'queued', onRetry?: () => void, onCancel?: () => void, durationMs?: number): HTMLElement {
+export function createToolHeader(title: string, hint: string, state: 'running' | 'done' | 'error' | 'queued', onRetry?: () => void, onCancel?: () => void, durationMs?: number): HTMLElement {
   // No "Running"/"Completed"/"Error" text badge — the design artifact conveys state purely
   // through the tick's colour (tool-card.css's .tm-tool-card.running/.done/.error), the same
   // "spend boldness in one place, let colour/shape carry the rest" principle the composer's
@@ -47,7 +52,11 @@ function createToolHeader(title: string, hint: string, state: 'running' | 'done'
   const durationLabel = durationMs != null && durationMs > 0 && (state === 'done' || state === 'error')
     ? fmtToolDuration(durationMs) : '';
 
-  return el('div', { class: 'tm-tool-card-header' },
+  const toggle = el('button', {
+    class: 'tm-tool-card-toggle',
+    type: 'button',
+    'aria-expanded': 'false',
+  },
     el('div', { class: 'tm-tool-card-info' },
       el('span', { class: 'tm-tool-card-icon' }, toolStateGlyph(state)),
       el('span', { class: 'tm-tool-card-title' }, title),
@@ -55,14 +64,22 @@ function createToolHeader(title: string, hint: string, state: 'running' | 'done'
     ),
     durationLabel ? el('span', { class: 'tm-tool-card-duration' }, `· ${durationLabel}`) : null,
     el('span', { class: 'tm-tool-card-chevron', 'aria-hidden': 'true' }, '▾'),
+  );
+
+  return el('div', { class: 'tm-tool-card-header' },
+    toggle,
     el('div', { class: 'tm-tool-card-actions' },
       state === 'error' && onRetry ? el('button', {
         class: 'tm-tool-card-btn',
+        type: 'button',
+        'aria-label': 'Retry tool call',
         title: 'Retry',
         onClick: onRetry
       }, '↻') : null,
       state === 'running' && onCancel ? el('button', {
         class: 'tm-tool-card-btn',
+        type: 'button',
+        'aria-label': 'Cancel tool call',
         title: 'Cancel',
         onClick: onCancel
       }, '✕') : null
@@ -70,18 +87,11 @@ function createToolHeader(title: string, hint: string, state: 'running' | 'done'
   );
 }
 
-/** The collapsible `.tm-tool-card-body` output/diff block. Returns both the <details> element
- *  (to append to the card) and its inner <pre> (for the diff/output content the caller
- *  fills in afterward — the exact content depends on the tool, decided by buildToolCard).
- *  Enhanced with AI Elements patterns for better UX. */
-function createToolBody(): { el: HTMLDetailsElement; pre: HTMLPreElement; } {
+/** The disclosure region for tool output. Its header button owns expanded/collapsed state. */
+function createToolBody(): { el: HTMLDivElement; pre: HTMLPreElement; } {
   const pre = el('pre');
-  const more = createCollapse({ 
-    className: 'tm-tool-card-body hidden', 
-    summary: 'View output',
-    body: pre 
-  });
-  return { el: more, pre };
+  const body = el('div', { class: 'tm-tool-card-body' }, pre);
+  return { el: body, pre };
 }
 
 // ========== Public API ==========
@@ -100,7 +110,13 @@ export function buildReasoningBlock(text: string, tc?: string, isStreaming?: boo
     : isStreaming ? 'Thinking' : 'Thought';
 
   const glyph = buildSpinGlyph(!!isStreaming, '•');
-  const header = el('div', { class: 'tm-reasoning-header' },
+  const content = el('div', { class: 'tm-reasoning-content', id: toolDisclosureId() });
+  const header = el('button', {
+    class: 'tm-reasoning-header',
+    type: 'button',
+    'aria-expanded': String(!!isStreaming),
+    'aria-controls': content.id,
+  },
     el('div', { class: 'tm-reasoning-title' },
       glyph,
       el('span', { class: 'tm-reasoning-label' }, durationLabel),
@@ -109,14 +125,13 @@ export function buildReasoningBlock(text: string, tc?: string, isStreaming?: boo
   );
   block.appendChild(header);
 
-  // Collapsible content area — the muted reasoning card.
-  const content = el('div', { class: 'tm-reasoning-content' });
   const body = el('div', { class: 'tm-reasoning-body tm-reasoning-text' }, renderMarkdown(text || ''));
   content.appendChild(body);
   block.appendChild(content);
 
   header.addEventListener('click', () => {
     const open = block.classList.toggle('open');
+    header.setAttribute('aria-expanded', String(open));
     // Remember a deliberate open so the 1s auto-collapse above does not undo it.
     if (open) block.dataset.userOpen = '1'; else delete block.dataset.userOpen;
   });
@@ -140,6 +155,7 @@ export function updateReasoningBlock(block: HTMLElement, text: string, done?: bo
   block.classList.add('streaming', 'open');
   block.dataset.live = '1';
   block.dataset.streaming = 'true';
+  block.querySelector<HTMLElement>('.tm-reasoning-header')?.setAttribute('aria-expanded', 'true');
   block.querySelector<HTMLElement>('.tm-spin-glyph')?.classList.add('live');
   if (label) label.textContent = 'Thinking';
 }
@@ -164,7 +180,10 @@ export function settleReasoningBlock(block: HTMLElement, durationMs?: number): v
   // finish the last line and register the "Thought for Ns" label. Skipped if the reader
   // opened it themselves in the meantime — `data-user-open` is set by the header click.
   setTimeout(() => {
-    if (block.dataset.userOpen !== '1') block.classList.remove('open');
+    if (block.dataset.userOpen !== '1') {
+      block.classList.remove('open');
+      block.querySelector<HTMLElement>('.tm-reasoning-header')?.setAttribute('aria-expanded', 'false');
+    }
   }, 1000);
 }
 
@@ -273,10 +292,12 @@ export function buildToolCard(step: ToolStep, onRetry?: () => void, onCancel?: (
   });
 
   // AI Elements-style header with actions
-  card.appendChild(createToolHeader(title, hint || '', state, onRetry, onCancel, step.durationMs));
+  const header = createToolHeader(title, hint || '', state, onRetry, onCancel, step.durationMs);
+  card.appendChild(header);
 
-  const { el: more, pre } = createToolBody();
-  card.appendChild(more);
+  const { el: body, pre } = createToolBody();
+  body.id = toolDisclosureId();
+  card.appendChild(body);
 
   // Validation result styling
   const isValidationStatic = step.name === 'runCommand' && /\b(tsc|eslint|prettier|lint|typecheck|check|jest|vitest|mocha|pytest|go\s+test|cargo\s+(check|test)|npm\s+test|yarn\s+test|pnpm\s+test)\b/.test(
@@ -295,8 +316,7 @@ export function buildToolCard(step: ToolStep, onRetry?: () => void, onCancel?: (
   const mdSource = markdownDocSource(step);
 
   let hasBody = false;
-  // The node new bodies swap in for — createToolBody's <details> when unused as-is.
-  let bodyAnchor: HTMLElement = more;
+  let bodyAnchor: HTMLElement = body;
   if (mdSource != null) {
     pre.replaceWith(buildMarkdownDoc(mdSource));
     hasBody = true;
@@ -304,8 +324,8 @@ export function buildToolCard(step: ToolStep, onRetry?: () => void, onCancel?: (
     // Real unified diff via diff2html (inline / collapsed / summary by threshold), replacing
     // the generic "View output" collapse entirely.
     const d = editDiffArgs(step.args)!;
-    bodyAnchor = buildEditDiff(d.before, d.after, d.path);
-    more.replaceWith(bodyAnchor);
+    pre.remove();
+    body.appendChild(buildEditDiff(d.before, d.after, d.path));
     hasBody = true;
   } else {
     const argStr = (step.args && typeof step.args === 'object') ? JSON.stringify(step.args, null, 2) : String(step.args || '');
@@ -321,11 +341,18 @@ export function buildToolCard(step: ToolStep, onRetry?: () => void, onCancel?: (
       // Body stays collapsed by default (compact chip row); click the header to expand.
     }
   }
-  // Only reveal the expand chevron when there's a body to show.
-  if (hasBody) card.classList.add('has-body');
+  // Only enable the disclosure button when there is a body to show.
+  const toggle = header.querySelector<HTMLButtonElement>('.tm-tool-card-toggle');
+  if (hasBody) {
+    card.classList.add('has-body');
+    toggle?.setAttribute('aria-controls', body.id);
+  } else if (toggle) {
+    toggle.disabled = true;
+  }
   // Errors and EDITS open by default (still collapsible): a diff hidden behind a click is a
   // change the user never saw. buildEditDiff still collapses huge diffs behind its own summary.
   if (hasBody && (state === 'error' || isEditStatic)) card.classList.add('open');
+  toggle?.setAttribute('aria-expanded', String(card.classList.contains('open')));
 
   // Add progress bar for running tools
   if (state === 'running') {
@@ -335,13 +362,10 @@ export function buildToolCard(step: ToolStep, onRetry?: () => void, onCancel?: (
     card.insertBefore(progress, bodyAnchor);
   }
 
-  // Add click handler for header toggling
-  const header = card.querySelector('.tm-tool-card-header');
-  if (header) {
-    header.addEventListener('click', () => {
-      card.classList.toggle('open');
-    });
-  }
+  toggle?.addEventListener('click', () => {
+    const open = card.classList.toggle('open');
+    toggle.setAttribute('aria-expanded', String(open));
+  });
 
   return card;
 }
